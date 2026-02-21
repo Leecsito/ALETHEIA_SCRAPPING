@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # ⚔️ ALETHEIA
 
 Herramienta de scraping para datos competitivos de **Valorant VCT 2026**.
@@ -59,3 +60,7 @@ Todos los archivos se guardan en `output_data/`:
 
 - Python 3.8+
 - Google Chrome (para scripts que usan Selenium)
+=======
+# ALETHEIA_SCRAPPING
+Scrapeador hecho en Python para extraer datos de partidos profesionales de Valorant.
+>>>>>>> d666f0e075fcaa4b4190ae19ff065e13f7895def
