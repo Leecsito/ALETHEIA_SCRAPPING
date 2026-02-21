@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Datos de salida (regenerables con los scripts)
+output_data/*.xlsx
+
+# Selenium / WebDriver
+*.log
+chromedriver*
+
+# Gemini
+.gemini/
