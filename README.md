@@ -14,7 +14,8 @@ ALETHEIA/
 ├── DOCUMENTACION.md                 # Documentación técnica exhaustiva del sistema
 ├── scripts/
 │   ├── scrapear_enlaces_evento.py   # Extractor de URLs de partidos
-│   ├── scrapear_equipos_jugadores.py# Equipos y jugadores (Liquipedia)
+│   ├── scrapear_equipos.py          # Catálogo de equipos (VLR.gg)
+│   ├── scrapear_jugadores.py        # Catálogo de jugadores (VLR.gg)
 │   ├── scrapear_partidos.py         # Partidos VCT (VLR.gg)
 │   ├── scrapear_vlr_corregido.py    # Mapas y rondas
 │   ├── scrapear_stats_pro.py        # Stats por lado ATK/DEF
@@ -44,7 +45,7 @@ pip install -r requirements.txt
 python main.py
 
 # Ejecutar un script individual
-python scripts/scrapear_equipos_jugadores.py
+python scripts/scrapear_equipos.py
 ```
 
 ## 📊 Archivos de salida
@@ -53,7 +54,8 @@ Todos los archivos se guardan en `output_data/` (los torneos en sus subcarpetas 
 
 | Script | Archivos generados |
 |---|---|
-| Equipos y Jugadores | `vct_equipos.xlsx`, `vct_jugadores.xlsx` |
+| Equipos VCT | `vct_equipos.xlsx` |
+| Jugadores VCT | `vct_jugadores.xlsx` |
 | Partidos | `vct_partidos.xlsx` |
 | Mapas y Rondas | `vlr_mapas.xlsx`, `vlr_rondas.xlsx` |
 | Stats por lado | `vlr_stats_players_sides.xlsx` |

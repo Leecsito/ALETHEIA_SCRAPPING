@@ -1,6 +1,6 @@
 # ALETHEIA — Documentación Técnica
 
-**Dominio / Fuentes:** [VLR.gg](https://www.vlr.gg) & [Liquipedia Valorant](https://liquipedia.net/valorant/)  
+**Dominio / Fuentes:** [VLR.gg](https://www.vlr.gg)  
 **Tipo:** Pipeline ETL y suite de Web Scraping para analítica y datos competitivos de Valorant Champions Tour (VCT)  
 **Entorno de ejecución:** Python 3.8+ (Windows / Linux)  
 **Almacenamiento / Salida:** Hojas de cálculo Excel (`.xlsx`) estructuradas jerárquicamente y listas de enlaces (`.txt`)  
@@ -13,9 +13,9 @@
 | Capa | Tecnología | Propósito |
 |------|------------|-----------|
 | **Lenguaje base** | Python 3.8+ | Núcleo del pipeline y scripts de scraping |
-| **Scraping HTTP / Estático** | `requests` (con headers de navegador) | Descarga rápida de HTML en páginas estáticas (Liquipedia, partidos de VLR) |
+| **Scraping HTTP / Estático** | `requests` (con headers de navegador) | Descarga rápida de HTML en páginas de partidos de VLR.gg |
 | **Parsing HTML / DOM** | `BeautifulSoup4` con backend `lxml` | Extracción, recorrido de selectores CSS y limpieza de texto |
-| **Scraping Dinámico / SPA** | `selenium` + `webdriver-manager` | Automatización de navegador Chrome headless para interactuar con filtros JavaScript y pestañas |
+| **Scraping Dinámico / SPA** | `selenium` + `webdriver-manager` | Automatización de Chrome headless para rankings, stats, perfiles y pestañas |
 | **Motor de Navegador** | Google Chrome (Headless) | Renderizado de scripts cliente de VLR.gg (`--disable-blink-features=AutomationControlled`) |
 | **Manipulación de Datos (ETL)** | `pandas` | Limpieza, estructuración, transformaciones proporcionales y agregaciones |
 | **Persistencia / Exportación** | `openpyxl` | Generación de libros y hojas de cálculo Excel (`.xlsx`) |
@@ -33,22 +33,24 @@ ALETHEIA/
 ├── DOCUMENTACION.md                 # Documentación técnica central del proyecto
 ├── requirements.txt                 # Dependencias del proyecto Python
 ├── README.md                        # Descripción breve y guía inicial de uso
-├── .gitignore                       # Reglas de exclusión de Git (ignora .xlsx, venv, pycache, etc.)
+├── .gitignore                       # Reglas de exclusión de Git (ignora output_data/*, venv, pycache, etc.)
 │
 ├── scripts/                         # Módulos y motores especializados de scraping
 │   ├── scrapear_enlaces_evento.py   # [Script 0] Extrae URLs de partidos desde la página del evento en VLR.gg
-│   ├── scrapear_equipos_jugadores.py# [Script 1] Extrae equipos VCT y jugadores activos desde Liquipedia
+│   ├── scrapear_equipos.py          # [Script 1] Extrae catálogo de equipos desde rankings VLR.gg (team_id nativo)
 │   ├── scrapear_partidos.py         # [Script 2] Extrae metadatos del partido, fecha, score, veto y parches
 │   ├── scrapear_vlr_corregido.py    # [Script 3] Extrae mapas, rondas, resoluciones y pick de mapa vs lado
 │   ├── scrapear_stats_pro.py        # [Script 4] Extrae estadísticas por jugador discriminadas por lado (Attack/Defense)
 │   ├── scrapear_stats_pro_china.py  # [Script 4 - China] Motor alternativo: split proporcional para eventos de China
 │   ├── scrapear_enfrentamientos.py  # [Script 5] Extrae matrices de enfrentamientos (H2H) y tabla de multikills/clutches
-│   └── scrapear_economia.py         # [Script 6] Extrae resumen económico por equipo y economía ronda a ronda
+│   ├── scrapear_economia.py         # [Script 6] Extrae resumen económico por equipo y economía ronda a ronda
+│   └── scrapear_jugadores.py        # [Script 7] Extrae catálogo de jugadores activos y equipo actual desde VLR.gg
 │
-└── output_data/                     # Almacenamiento local de datos generados
+└── output_data/                     # Almacenamiento local de datos generados (ignorado en Git)
+    ├── .gitkeep                     # Conserva la estructura de la carpeta en clones limpios
     ├── enlaces_<nombre_evento>.txt  # URLs de partidos de un evento específico (ej: enlaces_vct-2026-americas-kickoff.txt)
-    ├── vct_equipos.xlsx             # Catálogo maestro global de equipos franquiciados VCT
-    ├── vct_jugadores.xlsx           # Catálogo maestro global de jugadores profesionales activos
+    ├── vct_equipos.xlsx             # Catálogo maestro global de equipos VLR.gg
+    ├── vct_jugadores.xlsx           # Catálogo maestro global de jugadores profesionales VLR.gg
     │
     └── <nombre_evento>/             # Subcarpeta generada por evento (ej: vct-2026-americas-kickoff/)
         ├── vct_partidos.xlsx        # Metadatos generales y vetos de los partidos del evento
@@ -74,11 +76,11 @@ ALETHEIA/
                                             │
            ┌────────────────────────────────┼────────────────────────────────┐
            ▼                                ▼                                ▼
-  [Paso 1: Script 0]               [Paso 2: Script 1]               [Paso 3: Scripts 2-6]
-scrapear_enlaces_evento.py    scrapear_equipos_jugadores.py         Ejecución en Paralelo
+  [Paso 1: Script 0]            [Paso 2: Scripts 1 & 7]             [Paso 3: Scripts 2-6]
+scrapear_enlaces_evento.py    scrapear_equipos / scrapear_jugadores Ejecución en Paralelo
            │                                │                                │
            ▼                                ▼                                ▼
-   VLR.gg Event Page               Liquipedia VCT Hub              ThreadPoolExecutor (max=5)
+   VLR.gg Event Page               VLR.gg Rankings & Stats          ThreadPoolExecutor (max=5)
            │                                │                                │
            ▼                                ▼                                ├── Script 2 (Partidos)
   output_data/                      output_data/                             ├── Script 3 (Mapas/Rondas)
@@ -99,9 +101,9 @@ Al seleccionar `[A]` en `main.py`, el pipeline evalúa el estado del almacenamie
    - Comprueba si existen archivos `enlaces_*.txt` en `output_data/`.
    - Si existen, los reutiliza y salta al paso 2.
    - Si no existen, lanza interactivamente `scrapear_enlaces_evento.py`.
-2. **Paso 2 — Catálogo Maestro (Prerrequisito Secuencial):**
-   - Ejecuta `scrapear_equipos_jugadores.py`.
-   - Si `vct_equipos.xlsx` y `vct_jugadores.xlsx` ya existen, la función `salidas_existen("1")` **omite** este paso automáticamente.
+2. **Paso 2 — Catálogo Maestro (Prerrequisitos Secuenciales):**
+   - Ejecuta `scrapear_equipos.py` y `scrapear_jugadores.py`.
+   - Si `vct_equipos.xlsx` o `vct_jugadores.xlsx` ya existen, la función `salidas_existen()` **omite** el script correspondiente automáticamente para ahorrar tiempo de cómputo.
 3. **Paso 3 — Scraping Concurrente por Lotes de Eventos:**
    - Detecta qué archivos `.txt` en `output_data/` aún **no tienen su subcarpeta correspondiente**.
    - Por cada evento pendiente, genera la subcarpeta `output_data/<nombre_evento>/`.
@@ -130,14 +132,14 @@ Cuando detecta la palabra `china` en el nombre del `.txt`, conmuta la ejecución
   - `[2] Solo completados (completed)`: Filtra exclusivamente los tags que contienen la clase CSS `mod-completed` dentro de `div.match-item-eta`.
 - **Salida:** `output_data/enlaces_<slug_evento>[_completed|_all].txt`.
 
-### [Script 1] `scrapear_equipos_jugadores.py`
-- **Fuente:** Hub VCT en Liquipedia (`https://liquipedia.net/valorant/VCT/2026/Partnered_Teams`).
+### [Script 1] `scrapear_equipos.py`
+- **Fuente:** Rankings regionales oficiales en VLR.gg (`https://www.vlr.gg/rankings/{slug}`).
 - **Mecanismo:**
-  1. Descarga el Hub vía `requests` con headers de navegador.
-  2. Itera las secciones `<h3>` filtrando las cuatro ligas internacionales oficiales: **Americas**, **EMEA**, **Pacific** y **China**.
-  3. Extrae nombre del equipo, URL y asigna un `team_id` autoincremental, guardando `output_data/vct_equipos.xlsx`.
-  4. Navega a la URL de cada equipo y localiza la tabla de roster activo identificada por los contenedores `#Active`, `#Active_Roster` o `#Player_Roster` con la clase `.roster-card`.
-  5. Extrae `nickname` y `real_name` (limpiando paréntesis) y genera `output_data/vct_jugadores.xlsx`.
+  1. Recorre las 13 divisiones y regiones (`north-america`, `europe`, `brazil`, `asia-pacific`, `korea`, `china`, `japan`, `la-s`, `la-n`, `oceania`, `mena`, `gc`, `collegiate`).
+  2. Extrae el `team_id` numérico nativo de VLR.gg desde las URLs `/team/(\d+)/`, garantizando compatibilidad directa con las demás tablas de partidos y estadísticas.
+  3. Extrae `team_name`, `region`, `country` y la URL canónica del equipo en VLR.gg.
+  4. Deduplica por `team_id` conservando el primer registro encontrado.
+- **Salida:** `output_data/vct_equipos.xlsx` (Hoja: `Equipos`).
 
 ### [Script 2] `scrapear_partidos.py`
 - **Fuente:** Páginas de partido en VLR.gg (`/match_id/...`).
@@ -205,6 +207,15 @@ Cuando detecta la palabra `china` en el nombre del `.txt`, conmuta la ejecución
     2. **Tabla de Economía Ronda a Ronda:** Registra el banco inicial (`bank`), el gasto efectuado (`spend`, obtenido del atributo `title` de `.rnd-sq`), la categoría de compra (`category`: `eco`, `semi_eco`, `semi_buy`, `full_buy`) y marca las rondas pistol fijas (`round == 1 or round == 13`).
 - **Salidas:** `output_data/<nombre_evento>/vlr_economia_resumen.xlsx` y `vlr_economia_rondas.xlsx`.
 
+### [Script 7] `scrapear_jugadores.py`
+- **Fuente:** VLR.gg (`/stats/` de ligas VCT y perfiles de jugador `/player/{id}/`).
+- **Mecanismo:**
+  1. Recorre de forma paginada las estadísticas globales de las 4 regiones principales (`americas`, `emea`, `pacific`, `china`).
+  2. Extrae el `player_id` numérico nativo de VLR.gg y el `nickname` de cada jugador.
+  3. Visita de manera individual el perfil de cada jugador único para inspeccionar la sección *"Current Teams"* (`wf-card`).
+  4. Obtiene el `team_id` real y el `team_name` de su equipo activo actual (o `None` si es agente libre / inactivo).
+- **Salida:** `output_data/vct_jugadores.xlsx` (Hoja: `Jugadores`).
+
 ---
 
 ## 5. Esquema de Datos y Diccionario de Tablas
@@ -228,26 +239,27 @@ vct_partidos ◄────────────── vlr_mapas (match_id)
 ---
 
 ### Tabla: `vct_equipos.xlsx` (Hoja: `Equipos`)
-Almacena las organizaciones asociadas oficialmente al VCT por región.
+Catálogo maestro de organizaciones con identificador nativo de VLR.gg.
 
 | Campo | Tipo | Descripción | Ejemplo |
 |-------|------|-------------|---------|
-| `team_id` | INTEGER PK | Identificador numérico único asignado | `1` |
-| `team_name` | TEXT NOT NULL | Nombre comercial del equipo | `Sentinels` |
-| `region` | TEXT NOT NULL | Liga VCT (`Americas`, `EMEA`, `Pacific`, `China`) | `Americas` |
-| `url` | TEXT NOT NULL | Enlace directo a la página de Liquipedia | `https://liquipedia.net/valorant/Sentinels` |
+| `team_id` | INTEGER PK | Identificador numérico real nativo de VLR.gg | `2` |
+| `team_name` | TEXT NOT NULL | Nombre oficial de la organización | `Sentinels` |
+| `region` | TEXT NOT NULL | Región competitiva VLR (`North America`, `Europe`, etc.) | `North America` |
+| `country` | TEXT | País de bandera del equipo | `United States` |
+| `url` | TEXT NOT NULL | Enlace canónico al perfil del equipo en VLR.gg | `https://www.vlr.gg/team/2/sentinels` |
 
 ---
 
 ### Tabla: `vct_jugadores.xlsx` (Hoja: `Jugadores`)
-Almacena los jugadores activos registrados en el roster de cada equipo.
+Catálogo de jugadores competitivos activos vinculados por su `team_id` nativo de VLR.gg.
 
 | Campo | Tipo | Descripción | Ejemplo |
 |-------|------|-------------|---------|
-| `nickname` | TEXT NOT NULL | Alias o gamertag del jugador profesional | `zekken` |
-| `real_name` | TEXT | Nombre civil completo del jugador | `Zachary Patrone` |
-| `team_id` | INTEGER FK | Relación lógica hacia `vct_equipos.team_id` | `1` |
-| `team_name` | TEXT NOT NULL | Nombre del equipo al que pertenece | `Sentinels` |
+| `player_id` | INTEGER PK | Identificador numérico real nativo del jugador en VLR.gg | `9` |
+| `nickname` | TEXT NOT NULL | Alias o gamertag profesional | `zekken` |
+| `team_id` | INTEGER FK | Relación directa con `vct_equipos.team_id` | `2` |
+| `team_name` | TEXT | Nombre del equipo activo en su perfil de VLR.gg | `Sentinels` |
 
 ---
 
@@ -443,8 +455,9 @@ python main.py
 
 Menú disponible:
 - `[0]`: Extractor de enlaces de evento (solicita URL de torneo en VLR.gg y genera el `.txt`).
-- `[1]`: Equipos y Jugadores (descarga catálogo maestro desde Liquipedia).
-- `[2] - [6]`: Ejecutar un script específico de manera individual sobre un archivo `.txt`.
+- `[1]`: Equipos VCT (descarga catálogo maestro de equipos desde VLR.gg con `team_id` nativo).
+- `[2] - [6]`: Ejecutar un script analítico específico de manera individual sobre un archivo `.txt`.
+- `[7]`: Jugadores VCT (descarga catálogo maestro de jugadores y equipo actual desde VLR.gg con `player_id` y `team_id` nativos).
 - `[A]`: **Ejecución total en paralelo.** Procesa todos los torneos pendientes con 5 hilos simultáneos.
 - `[Q]`: Salir del programa.
 

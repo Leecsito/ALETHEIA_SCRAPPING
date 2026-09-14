@@ -8,6 +8,11 @@ import sys
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+if hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
 SCRIPTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'scripts')
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'output_data')
 
@@ -18,9 +23,9 @@ SCRIPTS = {
         "salida": [],  # Nombre dinámico según el evento; nunca se omite
     },
     "1": {
-        "nombre": "Equipos y Jugadores (Liquipedia)",
-        "archivo": "scrapear_equipos_jugadores.py",
-        "salida": ["vct_equipos.xlsx", "vct_jugadores.xlsx"],
+        "nombre": "Equipos VCT (VLR.gg)",
+        "archivo": "scrapear_equipos.py",
+        "salida": ["vct_equipos.xlsx"],
     },
     "2": {
         "nombre": "Partidos VCT (VLR.gg)",
@@ -48,12 +53,17 @@ SCRIPTS = {
         "archivo": "scrapear_economia.py",
         "salida": ["vlr_economia_resumen.xlsx", "vlr_economia_rondas.xlsx"],
     },
+    "7": {
+        "nombre": "Jugadores VCT (VLR.gg)",
+        "archivo": "scrapear_jugadores.py",
+        "salida": ["vct_jugadores.xlsx"],
+    },
 }
 
 # Scripts que se ejecutan en paralelo al elegir [A]
 SCRIPTS_PARALELOS = ["2", "3", "4", "5", "6"]
 # Scripts que siempre corren en secuencia (prerequisitos)
-SCRIPTS_SECUENCIALES = ["0", "1"]
+SCRIPTS_SECUENCIALES = ["0", "1", "7"]
 
 
 def mostrar_menu():
@@ -209,11 +219,13 @@ def ejecutar_todos():
         if ejecutar_script("0", omitir_si_existe=False):
             exitos += 1
 
-    # ── PASO 2: Script 1 secuencial, omitible ───────────────────────────────
+    # ── PASO 2: Catálogo maestro secuencial (prerequisitos) ─────────────────
     print("\n" + "=" * 60)
-    print("  PASO 2/3 — Equipos y Jugadores (prerequisito)")
+    print("  PASO 2/3 — Catálogo Maestro (Equipos y Jugadores VLR)")
     print("=" * 60)
     if ejecutar_script("1", omitir_si_existe=True):
+        exitos += 1
+    if ejecutar_script("7", omitir_si_existe=True):
         exitos += 1
 
     # ── PASO 3: Por cada .txt pendiente → 5 scripts en PARALELO ─────────────
