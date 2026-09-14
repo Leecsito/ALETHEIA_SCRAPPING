@@ -1,23 +1,27 @@
-<<<<<<< HEAD
 # ⚔️ ALETHEIA
 
-Herramienta de scraping para datos competitivos de **Valorant VCT 2026**.
+Herramienta de scraping y pipeline ETL para datos competitivos de **Valorant Champions Tour (VCT)**.
 
-Extrae automáticamente equipos, jugadores, partidos, estadísticas por mapa/lado, enfrentamientos, multikills y economía desde **Liquipedia** y **VLR.gg**.
+Extrae automáticamente equipos, jugadores, partidos, estadísticas por mapa/lado, enfrentamientos directos, multikills, clutches y economía desde **Liquipedia** y **VLR.gg**.
+
+> 📖 **Documentación Técnica Completa:** Consulta [DOCUMENTACION.md](DOCUMENTACION.md) para conocer la arquitectura profunda, diccionarios de datos, esquemas de tablas Excel, motores de scraping y la directiva obligatoria de mantenimiento.
 
 ## 📂 Estructura
 
 ```
 ALETHEIA/
-├── main.py                  # Menú principal para ejecutar scripts
+├── main.py                          # Menú principal y orquestador CLI
+├── DOCUMENTACION.md                 # Documentación técnica exhaustiva del sistema
 ├── scripts/
-│   ├── scrapear_equipos_jugadores.py   # Equipos y jugadores (Liquipedia)
-│   ├── scrapear_partidos.py            # Partidos VCT (VLR.gg)
-│   ├── scrapear_vlr_corregido.py       # Mapas y rondas
-│   ├── scrapear_stats_pro.py           # Stats por lado ATK/DEF
-│   ├── scrapear_enfrentamientos.py     # Enfrentamientos y multikills
-│   └── scrapear_economia.py            # Economía por ronda
-├── output_data/             # Archivos Excel generados
+│   ├── scrapear_enlaces_evento.py   # Extractor de URLs de partidos
+│   ├── scrapear_equipos_jugadores.py# Equipos y jugadores (Liquipedia)
+│   ├── scrapear_partidos.py         # Partidos VCT (VLR.gg)
+│   ├── scrapear_vlr_corregido.py    # Mapas y rondas
+│   ├── scrapear_stats_pro.py        # Stats por lado ATK/DEF
+│   ├── scrapear_stats_pro_china.py  # Motor alternativo para eventos de China
+│   ├── scrapear_enfrentamientos.py  # Enfrentamientos y multikills
+│   └── scrapear_economia.py         # Economía por ronda y resumen
+├── output_data/                     # Archivos Excel generados
 ├── requirements.txt
 └── README.md
 ```
@@ -45,7 +49,7 @@ python scripts/scrapear_equipos_jugadores.py
 
 ## 📊 Archivos de salida
 
-Todos los archivos se guardan en `output_data/`:
+Todos los archivos se guardan en `output_data/` (los torneos en sus subcarpetas respectivas):
 
 | Script | Archivos generados |
 |---|---|
@@ -59,8 +63,5 @@ Todos los archivos se guardan en `output_data/`:
 ## ⚙️ Requisitos
 
 - Python 3.8+
-- Google Chrome (para scripts que usan Selenium)
-=======
-# ALETHEIA_SCRAPPING
-Scrapeador hecho en Python para extraer datos de partidos profesionales de Valorant.
->>>>>>> d666f0e075fcaa4b4190ae19ff065e13f7895def
+- Google Chrome (para scripts que usan Selenium Headless)
+

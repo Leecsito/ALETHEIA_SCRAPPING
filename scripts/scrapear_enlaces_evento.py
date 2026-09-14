@@ -2,13 +2,10 @@
 ALETHEIA - Script: Extractor de enlaces de evento VCT
 Fuente : VLR.gg  (página de evento)
 Salida : output_data/enlaces_<nombre_evento>.txt
-         (una URL por línea, listo para ser leído por cualquier script Python)
 
-Ejemplos de URLs válidas:
-  https://www.vlr.gg/event/2682/vct-2026-americas-kickoff
-  https://www.vlr.gg/event/2683/vct-2026-pacific-kickoff
-  https://www.vlr.gg/event/2684/vct-2026-emea-kickoff
-  https://www.vlr.gg/event/2685/vct-2026-china-kickoff
+Modos:
+  - "all"       → todos los partidos (completados + próximos + TBD)
+  - "completed" → solo partidos ya finalizados
 """
 
 import time
@@ -25,23 +22,35 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
 def parsear_evento(url: str) -> dict:
-    """
-    Extrae el event_id y slug de cualquier variante de URL del evento.
-    Ej: https://www.vlr.gg/event/2682/vct-2026-americas-kickoff/main-event
-        → { id: '2682', slug: 'vct-2026-americas-kickoff' }
-    """
     match = re.search(r'vlr\.gg/event/(\d+)/([^/?]+)', url)
     if match:
         return {'id': match.group(1), 'slug': match.group(2)}
     return None
 
 
-def extraer_enlaces_evento(driver, url: str) -> list:
+def es_completado(tag) -> bool:
     """
-    Dado un enlace de evento VLR.gg, devuelve la lista de URLs
-    de todos los partidos.
+    VLR.gg marca los partidos finalizados con:
+        <div class="ml mod-completed"> dentro de <div class="match-item-eta">
+    Partidos futuros o TBD NO tienen esta clase.
+    """
+    eta_div = tag.find('div', class_='match-item-eta')
+    if not eta_div:
+        return False
+    ml_div = eta_div.find(
+        'div',
+        class_=lambda c: c and 'ml' in c.split() and 'mod-completed' in c.split()
+    )
+    return ml_div is not None
 
-    URL real de partidos: /event/matches/{id}/{slug}
+
+def extraer_enlaces_evento(driver, url: str, solo_completados: bool = False) -> list:
+    """
+    Parámetros:
+        driver           : instancia Selenium WebDriver
+        url              : URL del evento
+        solo_completados : True  → solo partidos finalizados
+                           False → todos (completados + próximos + TBD)
     """
     evento = parsear_evento(url)
     if not evento:
@@ -59,12 +68,22 @@ def extraer_enlaces_evento(driver, url: str) -> list:
         return []
 
     soup = BeautifulSoup(driver.page_source, 'html.parser')
-    tags = soup.find_all('a', class_=lambda c: c and 'match-item' in c,
-                         href=re.compile(r'^/\d+/'))
+
+    # Recoge TODOS los match-item (incluye TBD y futuros)
+    tags = soup.find_all(
+        'a',
+        class_=lambda c: c and 'match-item' in c,
+        href=re.compile(r'^/\d+/')
+    )
 
     urls   = []
     vistos = set()
+
     for tag in tags:
+        # Filtro opcional
+        if solo_completados and not es_completado(tag):
+            continue
+
         href         = tag.get('href', '')
         url_completa = "https://www.vlr.gg" + href
         if url_completa not in vistos:
@@ -74,33 +93,37 @@ def extraer_enlaces_evento(driver, url: str) -> list:
     return urls
 
 
-def nombre_archivo_desde_url(url: str) -> str:
+def nombre_archivo_desde_url(url: str, solo_completados: bool = False) -> str:
     evento = parsear_evento(url)
+    sufijo = "_completed" if solo_completados else "_all"
     if evento:
-        return f"enlaces_{evento['slug']}.txt"
-    return "enlaces_evento.txt"
+        return f"enlaces_{evento['slug']}{sufijo}.txt"
+    return f"enlaces_evento{sufijo}.txt"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# EJECUCIÓN PRINCIPAL
 # ─────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     print("=" * 60)
     print("  ⚔️  ALETHEIA — Extractor de enlaces de evento VLR.gg")
     print("=" * 60)
     print()
-    print("  Ejemplos de enlace válido:")
-    print("    https://www.vlr.gg/event/2682/vct-2026-americas-kickoff")
-    print("    https://www.vlr.gg/event/2683/vct-2026-pacific-kickoff")
-    print()
 
     EVENTO_URL = input("  🔗 Pega el enlace del evento: ").strip()
-
     if not EVENTO_URL:
         print("❌ No ingresaste ningún enlace. Abortando.")
         exit(1)
 
-    # Inicializar Selenium
+    print()
+    print("  ¿Qué partidos quieres extraer?")
+    print("    [1] Todos (completados + próximos + TBD)  ← default")
+    print("    [2] Solo completados")
+    modo = input("  Elige [1/2]: ").strip()
+    SOLO_COMPLETADOS = (modo == "2")
+
+    print()
+    print(f"  Modo: {'solo completados ✅' if SOLO_COMPLETADOS else 'todos los partidos 📋'}")
+    print()
+
     options = Options()
     options.add_argument("--headless")
     options.add_argument("--no-sandbox")
@@ -119,12 +142,12 @@ if __name__ == "__main__":
         exit(1)
 
     try:
-        urls_partidos = extraer_enlaces_evento(driver, EVENTO_URL)
+        urls_partidos = extraer_enlaces_evento(driver, EVENTO_URL, solo_completados=SOLO_COMPLETADOS)
 
         if not urls_partidos:
             print("⚠️  No se encontraron partidos. Verifica el enlace del evento.")
         else:
-            nombre_salida = nombre_archivo_desde_url(EVENTO_URL)
+            nombre_salida = nombre_archivo_desde_url(EVENTO_URL, SOLO_COMPLETADOS)
             ruta_salida   = os.path.join(OUTPUT_DIR, nombre_salida)
 
             with open(ruta_salida, 'w', encoding='utf-8') as f:
@@ -149,17 +172,8 @@ if __name__ == "__main__":
     print("\n🏁 Script finalizado.")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# FUNCIÓN PÚBLICA — para importar desde otros scripts
-# ─────────────────────────────────────────────────────────────────────────────
+# ─── Función pública para importar ───────────────────────────────────────────
 def cargar_enlaces(nombre_archivo: str) -> list:
-    """
-    Lee un .txt generado por este script y devuelve la lista de URLs.
-
-    Uso:
-        from scrapear_enlaces_evento import cargar_enlaces
-        urls = cargar_enlaces("enlaces_vct-2026-americas-kickoff.txt")
-    """
     ruta = os.path.join(OUTPUT_DIR, nombre_archivo)
     if not os.path.exists(ruta):
         raise FileNotFoundError(f"No se encontró el archivo: {ruta}")
