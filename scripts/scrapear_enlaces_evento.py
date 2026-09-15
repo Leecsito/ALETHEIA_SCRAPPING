@@ -11,11 +11,10 @@ Modos:
 import time
 import os
 import re
+import sys
 from bs4 import BeautifulSoup
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from webdriver_manager.chrome import ChromeDriverManager
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from driver_setup import crear_driver
 
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'output_data')
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -124,19 +123,8 @@ if __name__ == "__main__":
     print(f"  Modo: {'solo completados ✅' if SOLO_COMPLETADOS else 'todos los partidos 📋'}")
     print()
 
-    options = Options()
-    options.add_argument("--headless")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--start-maximized")
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
-
     try:
-        driver = webdriver.Chrome(
-            service=Service(ChromeDriverManager().install()),
-            options=options
-        )
+        driver = crear_driver(headless=True)
     except Exception as e:
         print(f"❌ Error inicializando Chrome: {e}")
         exit(1)

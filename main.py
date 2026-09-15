@@ -16,6 +16,39 @@ if hasattr(sys.stderr, 'reconfigure'):
 SCRIPTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'scripts')
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'output_data')
 
+# Añadir scripts/ al path para poder importar driver_setup directamente
+sys.path.insert(0, SCRIPTS_DIR)
+
+
+def precalentar_chromedriver():
+    """Instala (o verifica en caché) chromedriver UNA SOLA VEZ en el proceso
+    principal, antes de lanzar el ThreadPoolExecutor.
+
+    Raíz del WinError 5: webdriver-manager hace un os.replace() interno al
+    desempaquetar el zip. Cuando 5 subprocesos corren en paralelo y cada uno
+    llama a ChromeDriverManager().install() simultáneamente, Windows bloquea
+    el .exe mientras otro proceso lo tiene abierto → PermissionError/WinError 5.
+
+    Solución: el proceso padre llama a install() aquí y obtiene la ruta del
+    binario. Esa ruta se inyecta como CHROMEDRIVER_PATH en el entorno de cada
+    subproceso. driver_setup.py detecta esta variable y se salta install()
+    completamente, construyendo Service() directo con la ruta ya conocida.
+    """
+    try:
+        from driver_setup import detectar_chrome_version_y_binario
+        from webdriver_manager.chrome import ChromeDriverManager
+        version_mayor, _ = detectar_chrome_version_y_binario()
+        if version_mayor:
+            ruta = ChromeDriverManager(driver_version=version_mayor).install()
+        else:
+            ruta = ChromeDriverManager().install()
+        print(f"✅ ChromeDriver pre-instalado: {ruta}")
+        return ruta
+    except Exception as e:
+        print(f"⚠️  No se pudo pre-instalar ChromeDriver: {e}")
+        return None
+
+
 SCRIPTS = {
     "0": {
         "nombre": "Extractor de enlaces de evento (VLR.gg)",
@@ -163,6 +196,11 @@ def ejecutar_script_paralelo(key, ruta_txt=None):
     env["PYTHONIOENCODING"] = "utf-8"
     if ruta_txt:
         env["ALETHEIA_TXT_FILE"] = ruta_txt
+    # Si el proceso padre ya instaló chromedriver, pasamos la ruta exacta al hijo
+    # para que driver_setup.py la use directamente sin llamar a install().
+    chromedriver_path = os.environ.get("CHROMEDRIVER_PATH")
+    if chromedriver_path:
+        env["CHROMEDRIVER_PATH"] = chromedriver_path
 
     resultado = subprocess.run(
         [sys.executable, ruta],
@@ -259,6 +297,14 @@ def ejecutar_todos():
         # No sumamos éxitos aquí, ya que los scripts no se ejecutaron.
         # El conteo de éxitos se basa en ejecuciones reales.
     else:
+        # ── Pre-instalar chromedriver UNA SOLA VEZ antes del paralelo ────────
+        # Evita el WinError 5: cada subproceso recibirá la ruta ya resuelta
+        # vía CHROMEDRIVER_PATH y no llamará a install() por su cuenta.
+        print("\n🔧 Pre-instalando ChromeDriver (una sola vez antes del paralelo)...")
+        ruta_cd = precalentar_chromedriver()
+        if ruta_cd:
+            os.environ["CHROMEDRIVER_PATH"] = ruta_cd
+
         for ruta_txt in txt_pendientes_rutas:
             nombre_evento = os.path.splitext(os.path.basename(ruta_txt))[0]
             if nombre_evento.startswith("enlaces_"):

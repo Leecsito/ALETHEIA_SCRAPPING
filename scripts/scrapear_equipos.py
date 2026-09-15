@@ -8,15 +8,15 @@ Extrae el ID numérico real de cada equipo directamente de VLR.gg, permitiendo
 vincularlo directamente con los datos de partidos, rondas, stats y economía.
 """
 
+import sys
 import os
 import re
 import time
 import pandas as pd
 from bs4 import BeautifulSoup
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from webdriver_manager.chrome import ChromeDriverManager
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from driver_setup import crear_driver
 
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'output_data')
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -39,25 +39,6 @@ REGIONES = {
 }
 
 BASE_URL = "https://www.vlr.gg/rankings/{slug}"
-
-
-def crear_driver():
-    options = Options()
-    options.add_argument("--start-maximized")
-    options.add_argument("--headless")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-blink-features=AutomationControlled")
-
-    chrome_binary = os.environ.get("CHROME_BINARY_PATH")
-    if chrome_binary:
-        options.binary_location = chrome_binary
-
-    driver_version = os.environ.get("CHROMEDRIVER_VERSION")
-    return webdriver.Chrome(
-        service=Service(ChromeDriverManager(driver_version=driver_version).install()),
-        options=options,
-    )
 
 
 def parsear_region(html, region_label):

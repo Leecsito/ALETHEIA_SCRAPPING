@@ -35,12 +35,11 @@ import os
 import re
 import glob
 import pandas as pd
+import sys
 from bs4 import BeautifulSoup
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
-from webdriver_manager.chrome import ChromeDriverManager
-from selenium.webdriver.chrome.options import Options
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from driver_setup import crear_driver
 
 # ─── CONFIGURACIÓN ────────────────────────────────────────────────────────────
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'output_data')
@@ -374,17 +373,8 @@ if __name__ == "__main__":
         print("     Ejecuta scrapear_vlr_corregido.py primero para mayor precisión.")
 
     # ── Configurar Selenium ───────────────────────────────────────────────────
-    options = Options()
-    options.add_argument("--headless")
-    options.add_argument("--start-maximized")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-
     try:
-        driver = webdriver.Chrome(
-            service=Service(ChromeDriverManager().install()),
-            options=options
-        )
+        driver = crear_driver(headless=True)
     except Exception as e:
         print(f"❌ Error inicializando driver: {e}")
         exit()

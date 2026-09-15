@@ -3,13 +3,10 @@ import os
 import pandas as pd
 import re
 from bs4 import BeautifulSoup
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
-from webdriver_manager.chrome import ChromeDriverManager
-from selenium.webdriver.chrome.options import Options
+import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from driver_setup import crear_driver
 
 # Carpeta de salida relativa al script
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'output_data')
@@ -99,7 +96,7 @@ def categoria_texto(simbolo):
 def obtener_mapas(soup, match_id):
     """Detecta los mapas jugados (excluyendo 'all')"""
     mapas = []
-    botones = soup.find_all('div', class_='vm-stats-gamesnav-item')
+    botones = soup.find_all(['div', 'a'], class_='vm-stats-gamesnav-item')
     for b in botones:
         game_id = b.get('data-game-id')
         if not game_id or game_id == 'all':
@@ -113,6 +110,83 @@ def obtener_mapas(soup, match_id):
                 'map_id':   f"{match_id}_{map_name}"
             })
     return mapas
+
+
+def generar_abbrev(nombre):
+    """Misma heurística usada en los otros scrapers para derivar una sigla
+    a partir del nombre completo (funciona bien para nombres de varias
+    palabras, ej. 'Team Liquid' -> 'tl')."""
+    tokens = re.findall(r'\d+|[a-zA-ZÀ-ÿ]+', nombre)
+    abbrev = ''
+    for token in tokens:
+        if token.isdigit():
+            abbrev += token
+        elif token.isupper():
+            abbrev += token
+        else:
+            abbrev += token[0].upper()
+    return abbrev.lower()
+
+
+def obtener_equipos_header(soup):
+    """Extrae nombre completo + team_id de los dos equipos desde el header
+    de la página (presente en cualquier pestaña, incluida economía)."""
+    teams_header = soup.find_all('div', class_='match-header-link-name')
+    if len(teams_header) >= 2:
+        global_team_a = teams_header[0].get_text(strip=True)
+        global_team_b = teams_header[1].get_text(strip=True)
+    else:
+        global_team_a, global_team_b = "TeamA", "TeamB"
+
+    team_a_id, team_b_id = None, None
+    for a_tag in soup.find_all('a', class_='match-header-link'):
+        clases = a_tag.get('class', [])
+        href = a_tag.get('href') or ""
+        m_id = re.search(r'/team/(\d+)', href)
+        if not m_id:
+            continue
+        if 'mod-1' in clases:
+            team_a_id = int(m_id.group(1))
+        elif 'mod-2' in clases:
+            team_b_id = int(m_id.group(1))
+
+    return global_team_a, global_team_b, team_a_id, team_b_id
+
+
+def construir_tag_map(soup, global_team_a, global_team_b, team_a_id, team_b_id):
+    """Resuelve las 2 siglas reales (ej. 'TL', 'GX') que usa la pestaña de
+    economía, a partir del texto de veto (match-header-note), que sigue
+    presente sin importar la pestaña. Como solo hay 2 equipos por partido,
+    si la heurística resuelve una sigla, la otra se asigna por descarte.
+    Devuelve {sigla: (team_id, team_name)}."""
+    note = soup.find('div', class_='match-header-note')
+    if not note:
+        return {}
+
+    texto = note.get_text(' ', strip=True)
+    siglas = re.findall(r'\b([A-Z][A-Z0-9]{1,4})\b(?=\s+(?:ban|pick))', texto)
+    siglas_unicas = list(dict.fromkeys(siglas))
+    if len(siglas_unicas) != 2:
+        return {}
+
+    resueltas = {}
+    for tag in siglas_unicas:
+        tag_low = tag.lower()
+        if global_team_a.lower().startswith(tag_low) or generar_abbrev(global_team_a) == tag_low:
+            resueltas[tag] = (team_a_id, global_team_a)
+        elif global_team_b.lower().startswith(tag_low) or generar_abbrev(global_team_b) == tag_low:
+            resueltas[tag] = (team_b_id, global_team_b)
+
+    if len(resueltas) == 1:
+        tag_resuelta = next(iter(resueltas))
+        equipo_resuelto = resueltas[tag_resuelta][1]
+        tag_restante = [t for t in siglas_unicas if t != tag_resuelta][0]
+        if equipo_resuelto == global_team_a:
+            resueltas[tag_restante] = (team_b_id, global_team_b)
+        else:
+            resueltas[tag_restante] = (team_a_id, global_team_a)
+
+    return resueltas
 
 def obtener_economia(driver, url):
     """
@@ -142,6 +216,12 @@ def obtener_economia(driver, url):
     mapas = obtener_mapas(soup, match_id)
     print(f"  🗺️  Mapas: {[m['map_name'] for m in mapas]}")
 
+    global_team_a, global_team_b, team_a_id, team_b_id = obtener_equipos_header(soup)
+    tag_map = construir_tag_map(soup, global_team_a, global_team_b, team_a_id, team_b_id)
+    if len(tag_map) < 2:
+        print(f"  ⚠️  No se pudieron resolver las siglas del partido "
+              f"(tags vistos: {list(tag_map.keys())}); team_id quedará vacío")
+
     resumen_rows = []
     rondas_rows  = []
 
@@ -154,7 +234,7 @@ def obtener_economia(driver, url):
         # Clic en el mapa
         try:
             btn = driver.find_element(By.CSS_SELECTOR,
-                f"div.vm-stats-gamesnav-item[data-game-id='{game_id}']")
+                f".vm-stats-gamesnav-item[data-game-id='{game_id}']")
             driver.execute_script("arguments[0].click();", btn)
             time.sleep(2)
         except Exception as e:
@@ -195,6 +275,7 @@ def obtener_economia(driver, url):
                 continue
             equipo = team_div.get_text(strip=True)
             equipos_orden.append(equipo)
+            team_id_val, _ = tag_map.get(equipo, (None, None))
 
             def get_sq_text(celda):
                 sq = celda.find('div', class_='stats-sq')
@@ -232,6 +313,7 @@ def obtener_economia(driver, url):
                 'match_id':        match_id,
                 'map_id':          map_id,
                 'team':            equipo,
+                'team_id':         team_id_val,
                 'pistol_won':      pistol_won,
                 # Formato "jugadas(ganadas)" como en VLR pero sin las pistols
                 'eco':      f"{eco_real_j}({eco_real_g})",
@@ -261,6 +343,8 @@ def obtener_economia(driver, url):
         teams_divs  = primera_col.find_all('div', class_='team') if primera_col else []
         team_top = teams_divs[0].get_text(strip=True) if len(teams_divs) > 0 else "TeamA"
         team_bot = teams_divs[1].get_text(strip=True) if len(teams_divs) > 1 else "TeamB"
+        team_top_id, _ = tag_map.get(team_top, (None, None))
+        team_bot_id, _ = tag_map.get(team_bot, (None, None))
 
         columnas = tabla_rondas.find_all('td')[1:]  # Saltar primera col (labels)
 
@@ -311,10 +395,12 @@ def obtener_economia(driver, url):
                 'round':       num_ronda,
                 'is_pistol':   1 if es_pistol else 0,
                 'team_top':    team_top,
+                'team_top_id': team_top_id,
                 'bank_top':    bank_top,
                 'spend_top':   gasto_top,
                 'category_top': cat_top,
                 'team_bot':    team_bot,
+                'team_bot_id': team_bot_id,
                 'bank_bot':    bank_bot,
                 'spend_bot':   gasto_bot,
                 'category_bot': cat_bot,
@@ -329,14 +415,8 @@ if __name__ == "__main__":
     print("🚀 Iniciando extracción de economía...")
     print("=" * 60)
 
-    options = Options()
-    options.add_argument("--headless")
-    options.add_argument("--start-maximized")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-
     try:
-        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+        driver = crear_driver(headless=True)
     except Exception as e:
         print(f"❌ Error inicializando driver: {e}")
         exit()

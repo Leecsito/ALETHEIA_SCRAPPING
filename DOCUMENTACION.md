@@ -16,11 +16,12 @@
 | **Scraping HTTP / Estático** | `requests` (con headers de navegador) | Descarga rápida de HTML en páginas de partidos de VLR.gg |
 | **Parsing HTML / DOM** | `BeautifulSoup4` con backend `lxml` | Extracción, recorrido de selectores CSS y limpieza de texto |
 | **Scraping Dinámico / SPA** | `selenium` + `webdriver-manager` | Automatización de Chrome headless para rankings, stats, perfiles y pestañas |
-| **Motor de Navegador** | Google Chrome (Headless) | Renderizado de scripts cliente de VLR.gg (`--disable-blink-features=AutomationControlled`) |
+| **Gestión y Compatibilidad WebDriver** | `driver_setup.py` (Selenium + WDM) | Detección automática de binario/versión Chrome/Chromium (resuelve desfase v151 vs v153) y UTF-8 en consola |
+| **Motor de Navegador** | Google Chrome / Chromium (Headless) | Renderizado de scripts cliente de VLR.gg (`--disable-blink-features=AutomationControlled`) |
 | **Manipulación de Datos (ETL)** | `pandas` | Limpieza, estructuración, transformaciones proporcionales y agregaciones |
 | **Persistencia / Exportación** | `openpyxl` | Generación de libros y hojas de cálculo Excel (`.xlsx`) |
 | **Concurrencia & Multiproceso** | `concurrent.futures.ThreadPoolExecutor` + `subprocess` | Paralelización por lotes (hasta 5 scripts simultáneos por evento) |
-| **Comunicación inter-procesos** | Variables de entorno (`ALETHEIA_TXT_FILE`, `PYTHONIOENCODING`) | Inyección dinámica de contexto entre el orquestador y los subprocesos |
+| **Comunicación inter-procesos** | Variables de entorno (`ALETHEIA_TXT_FILE`, `PYTHONIOENCODING`, `CHROMEDRIVER_VERSION`, `CHROME_BINARY_PATH`) | Inyección dinámica de contexto y compatibilidad entre el orquestador y los subprocesos |
 
 ---
 
@@ -36,6 +37,7 @@ ALETHEIA/
 ├── .gitignore                       # Reglas de exclusión de Git (ignora output_data/*, venv, pycache, etc.)
 │
 ├── scripts/                         # Módulos y motores especializados de scraping
+│   ├── driver_setup.py              # [Helper Central] Detección de versión Chrome/Chromium y creación de WebDriver
 │   ├── scrapear_enlaces_evento.py   # [Script 0] Extrae URLs de partidos desde la página del evento en VLR.gg
 │   ├── scrapear_equipos.py          # [Script 1] Extrae catálogo de equipos desde rankings VLR.gg (team_id nativo)
 │   ├── scrapear_partidos.py         # [Script 2] Extrae metadatos del partido, fecha, score, veto y parches
@@ -125,6 +127,27 @@ Cuando detecta la palabra `china` en el nombre del `.txt`, conmuta la ejecución
 
 ## 4. Módulos y Scripts en Detalle
 
+### [Módulo Central] `driver_setup.py`
+- **Propósito:** Gestor e inicializador centralizado de Selenium WebDriver para todos los scripts del proyecto (`scrapear_*.py`). Resuelve incompatibilidades entre la versión del navegador instalada localmente y la versión de ChromeDriver que descarga `webdriver-manager`.
+- **Problema de Compatibilidad Resuelto:**
+  - En entornos Windows donde Google Chrome está ausente en las rutas convencionales de `Program Files`, o donde se utiliza una compilación de Chromium (por ejemplo Chromium v151 en `%LOCALAPPDATA%\Chromium\Application\chrome.exe`), invocar `ChromeDriverManager().install()` de forma genérica provoca que se descargue la versión "latest stable" de Google (ej: v153), generando el error fatal:
+    `session not created: This version of ChromeDriver only supports Chrome version 153. Current browser version is 151.x`.
+- **Race Condition Resuelta (pre-instalación en proceso padre):**
+  - Cuando `main.py` lanza los 5 scripts analíticos en paralelo (`ThreadPoolExecutor`), cada subproceso llamaba a `ChromeDriverManager().install()`. Windows bloquea el binario `chromedriver.exe` durante el `os.replace()` interno de WDM al desempaquetar el zip → `[WinError 5] Acceso denegado`. Un `FileLock` externo no es suficiente porque la carrera ocurre **dentro del código de la librería**, no entre nuestras llamadas.
+  - **Solución real (dos capas):**
+    1. **`main.py` → `precalentar_chromedriver()`:** Antes de lanzar el `ThreadPoolExecutor`, el proceso padre llama a `install()` una sola vez, obtiene la ruta del binario y la fija en `os.environ["CHROMEDRIVER_PATH"]`. Esa variable se hereda en el entorno de cada subproceso vía `env["CHROMEDRIVER_PATH"]` en `ejecutar_script_paralelo()`.
+    2. **`driver_setup.py` → `crear_driver()`:** Al iniciar, comprueba si `CHROMEDRIVER_PATH` está definida y apunta a un fichero existente. Si es así, construye `Service(ruta)` directamente, sin llamar jamás a `install()`. Si no (ejecución individual de un script), usa el `FileLock` + `install()` como fallback.
+
+- **Mecanismo de Detección e Inicialización:**
+  1. **Búsqueda Jerárquica de Binario:** Inspecciona variables de entorno (`CHROME_BINARY_PATH`), `%LOCALAPPDATA%\Chromium\Application\chrome.exe` y las rutas estándar de `Program Files`.
+  2. **Inspección de Versión Mayor:** Ejecuta `(Get-Item "<binario>").VersionInfo.ProductVersion` vía PowerShell para extraer la versión mayor real instalada (ej: `151`).
+  3. **Instalación Selectiva (bajo FileLock):** Invoca `ChromeDriverManager(driver_version=version_mayor).install()`, garantizando la descarga o reutilización del ChromeDriver idéntico a la versión del navegador.
+  4. **Caché en Memoria:** Cachea la tupla `(version, binary_path)` tras la primera detección para no incurrir en sobrecosto en ejecuciones múltiples.
+  5. **Configuración de Consola Windows (UTF-8):** Reconfigura `sys.stdout` y `sys.stderr` a UTF-8 con reemplazo de caracteres no mapeables, evitando fallos por `UnicodeEncodeError` al imprimir emojis informativos (`🚀`, `✅`, `❌`, `⚔️`) en consolas con codificación por defecto CP1252.
+- **Variables de Entorno Opcionales:**
+  - `CHROMEDRIVER_VERSION`: Fuerza una versión mayor específica (ej: `"151"`).
+  - `CHROME_BINARY_PATH`: Fuerza la ruta al ejecutable `chrome.exe`.
+
 ### [Script 0] `scrapear_enlaces_evento.py`
 - **Propósito:** Descargar todas las URLs de los enfrentamientos asociados a un torneo o fase VCT en VLR.gg.
 - **Modos de Operación:**
@@ -153,11 +176,13 @@ Cuando detecta la palabra `china` en el nombre del `.txt`, conmuta la ejecución
 - **Fuente:** Páginas de partido en VLR.gg (DOM general).
 - **Mecanismo y Heurísticas:**
   - Itera cada contenedor `.vm-stats-game` ignorando el contenedor resumen `data-game-id="all"`.
-  - **Detección de Picker y Decider:** Cruza el nombre del mapa con las notas de veto para identificar si fue pick de A, pick de B o mapa Decider (`"remains"`).
+  - **Resolución de Siglas desde el DOM (`construir_siglas_reales`):** Antes de cruzar el veto, lee las siglas reales que VLR.gg asigna a cada equipo directamente desde la primera columna del bloque `vlr-rounds` (elementos `div.team` en `vlr-rounds-row-col` col 0). Esto produce un mapa `{sigla_lower → 'A'|'B'}` (ej: `{'tl': 'A', 'gx': 'B'}`). Mismo patrón que `construir_mapa_tags()` en `scrapear_stats_pro.py`. Resuelve correctamente equipos de una sola palabra en mayúsculas (GIANTX→gx, T1→t1, DRX→drx) que fallan con la heurística de texto.
+  - **Detección de Picker y Decider:** Cruza el nombre del mapa con las notas de veto para identificar si fue pick de A, pick de B o mapa Decider (`"remains"`). La sigla del veto se resuelve primero por DOM; si el DOM no produce resultado, se aplica el fallback heurístico (`startswith` + `generar_abbrev`).
   - **Atribución de Selección de Bando:** En la ronda 1, evalúa qué escuadra ganó y el bando asignado (`mod-t` = Attack, `mod-ct` = Defense). Deduce el bando inicial del equipo que **no** pickeó el mapa (quien tiene la potestad de elegir lado).
   - **Compactación de Score por Bando:** Almacena las rondas ganadas en formato `atk/def` (ejemplo: `"7/6"` para el equipo superior y `"6/1"` para el inferior).
   - **Identificación de Resolución de Ronda:** Analiza la imagen de resolución para categorizar la victoria en: `"elim"` (bajas), `"detonation"` (explosión de spike), `"defuse"` (desactivación) o `"time"` (tiempo agotado).
 - **Salidas:** `output_data/<nombre_evento>/vlr_mapas.xlsx` y `vlr_rondas.xlsx`.
+
 
 ### [Script 4] `scrapear_stats_pro.py` (Motor Estándar)
 - **Fuente:** Páginas de partido en VLR.gg (Tab Overview).
@@ -307,7 +332,7 @@ Historial cronológico de cada ronda disputada.
 |-------|------|-------------|---------|
 | `round_id` | TEXT FK | Relación con el mapa | `598923_abyss` |
 | `num` | INTEGER | Número correlativo de la ronda (1..N) | `1` |
-| `win` | TEXT | Nombre de la escuadra ganadora de la ronda | `Sentinels` |
+| `win` | INTEGER FK | Identificador numérico del equipo ganador (relación con `vct_equipos.team_id`) | `2` |
 | `result` | TEXT | Método de resolución: `elim`, `detonation`, `defuse`, `time` | `elim` |
 | `band` | TEXT | Bando que ostentaba el ganador (`attack` / `defense`) | `attack` |
 
@@ -444,7 +469,7 @@ python -m venv venv
 pip install -r requirements.txt
 ```
 
-> **Requisito del Sistema:** Google Chrome instalado en el sistema operativo (Selenium usa `webdriver-manager` para autodescargar el chromedriver compatible automáticamente).
+> **Requisito del Sistema:** Google Chrome o Chromium instalado en el sistema operativo. ALETHEIA incluye detección automática en `scripts/driver_setup.py`, el cual localiza el ejecutable (en `Program Files` o `%LOCALAPPDATA%\Chromium`), consulta su versión real (`ProductVersion`) e instala la versión exacta compatible de ChromeDriver mediante `webdriver-manager`, permitiendo también anulación manual vía variables de entorno (`CHROMEDRIVER_VERSION`, `CHROME_BINARY_PATH`).
 
 ### B. Ejecución Interactiva
 

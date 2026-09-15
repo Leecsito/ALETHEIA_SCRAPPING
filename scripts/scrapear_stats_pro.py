@@ -3,11 +3,9 @@ import os
 import pandas as pd
 import re
 from bs4 import BeautifulSoup
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
-from webdriver_manager.chrome import ChromeDriverManager
-from selenium.webdriver.chrome.options import Options
+import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from driver_setup import crear_driver
 
 # Carpeta de salida relativa al script
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'output_data')
@@ -15,12 +13,6 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # --- CARGA DE ENLACES DESDE ARCHIVO .txt  +  CARPETA DE SALIDA DINÁMICA ---
 def cargar_enlaces_desde_txt():
-    """
-    Lee las URLs desde un .txt especifico.
-    - Si ALETHEIA_TXT_FILE esta definida (main.py), usa ese archivo.
-    - Si no, busca en output_data/; si hay varios pide al usuario elegir.
-    Siempre guarda en la subcarpeta del .txt elegido.
-    """
     import glob
 
     txt_forzado = os.environ.get("ALETHEIA_TXT_FILE")
@@ -63,184 +55,182 @@ def cargar_enlaces_desde_txt():
 
 ENLACES, OUTPUT_DIR = cargar_enlaces_desde_txt()
 
+
+def generar_abbrev(nombre):
+    """Misma heurística usada en scrapear_vlr_corregido.py para resolver abreviaturas."""
+    tokens = re.findall(r'\d+|[a-zA-ZÀ-ÿ]+', nombre)
+    abbrev = ''
+    for token in tokens:
+        if token.isdigit():
+            abbrev += token
+        elif token.isupper():
+            abbrev += token
+        else:
+            abbrev += token[0].upper()
+    return abbrev.lower()
+
+
+def construir_mapa_tags(div_mapa, global_team_a, global_team_b, team_a_id, team_b_id):
+    """Lee el tag REAL de VLR (ej. 'GX') para cada equipo dentro de este mapa,
+    desde el bloque vlr-rounds (mismo que usa scrapear_vlr_corregido.py para
+    team_top/team_bot), y lo liga a su team_id vía el nombre completo.
+    Devuelve {tag: (team_id, team_name)}."""
+    nombres = [d.get_text(strip=True) for d in div_mapa.find_all('div', class_='team-name')]
+    rc = div_mapa.find('div', class_='vlr-rounds')
+    tags = []
+    if rc:
+        col0 = rc.find_all('div', class_='vlr-rounds-row-col')
+        if col0:
+            tags = [d.get_text(strip=True) for d in col0[0].find_all('div', class_='team')]
+
+    mapa_tags = {}
+    if len(nombres) < 2 or len(tags) < 2:
+        return mapa_tags
+
+    for nombre, tag in zip(nombres[:2], tags[:2]):
+        if nombre == global_team_a:
+            mapa_tags[tag] = (team_a_id, global_team_a)
+        elif nombre == global_team_b:
+            mapa_tags[tag] = (team_b_id, global_team_b)
+    return mapa_tags
+
+
 def obtener_stats_detalladas(driver, url):
     print(f"🌐 Procesando: {url}")
     try:
         driver.get(url)
-        time.sleep(3) # Espera inicial
+        time.sleep(3)
+        html = driver.page_source
     except Exception as e:
         print(f"❌ Error cargando URL: {e}")
         return []
 
-    # Obtener Match ID de la URL
+    soup = BeautifulSoup(html, 'html.parser')
+
     match_id = "Unknown"
     match_search = re.search(r'vlr\.gg/(\d+)', url)
     if match_search:
         match_id = match_search.group(1)
 
-    datos_partido = []
+    # --- Equipos del header (para resolver team_id) ---
+    teams_header = soup.find_all('div', class_='match-header-link-name')
+    if len(teams_header) >= 2:
+        global_team_a = teams_header[0].get_text(strip=True)
+        global_team_b = teams_header[1].get_text(strip=True)
+    else:
+        global_team_a, global_team_b = "TeamA", "TeamB"
 
-    # Encontrar contenedores de mapas (excluyendo el general 'all')
-    contenedores_mapas = driver.find_elements(By.CSS_SELECTOR, "div.vm-stats-game")
+    team_a_id, team_b_id = None, None
+    for a_tag in soup.find_all('a', class_='match-header-link'):
+        clases = a_tag.get('class', [])
+        href = a_tag.get('href') or ""
+        m_id = re.search(r'/team/(\d+)', href)
+        if not m_id:
+            continue
+        if 'mod-1' in clases:
+            team_a_id = int(m_id.group(1))
+        elif 'mod-2' in clases:
+            team_b_id = int(m_id.group(1))
+
+    print(f"   🎮 {global_team_a}({team_a_id}) vs {global_team_b}({team_b_id})")
+
+    datos_partido = []
+    contenedores_mapas = soup.find_all('div', class_='vm-stats-game')
 
     for div_mapa in contenedores_mapas:
-        try:
-            game_id = div_mapa.get_attribute("data-game-id")
-            
-            # Saltamos el resumen general ("all")
-            if not game_id or game_id == "all":
-                continue
-
-            # Extraer nombre del mapa
-            soup_mapa = BeautifulSoup(div_mapa.get_attribute('outerHTML'), 'html.parser')
-            map_div = soup_mapa.find('div', class_='map')
-            if not map_div:
-                continue
-                
-            map_name_raw = map_div.get_text(strip=True)
-            map_name = map_name_raw.split()[0] # Limpieza: "Bind PICK" -> "Bind"
-            
-            map_id = f"{match_id}_{map_name.lower()}"
-            print(f"  📍 Analizando Mapa: {map_name} ({map_id})")
-
-            # --- ESTRATEGIA DE PESTAÑAS (ATTACK / DEFENSE) ---
-            # Los botones tienen atributo data-side="t" (Attack) y data-side="ct" (Defend)
-            
-            pestanas = {
-                'Attack': 't',  # Nombre en BD : valor de data-side
-                'Defense': 'ct'
-            }
-
-            for nombre_lado, data_side_valor in pestanas.items():
-                try:
-                    # Buscar el botón con data-side dentro de este contenedor
-                    # Usamos un selector más específico
-                    boton = div_mapa.find_element(
-                        By.CSS_SELECTOR, 
-                        f"div.js-side-filter div[data-side='{data_side_valor}']"
-                    )
-                    
-                    # Hacer clic con JS (más robusto)
-                    driver.execute_script("arguments[0].click();", boton)
-                    time.sleep(1) # Pausa para que el DOM cambie
-                    
-                    # Refrescar el HTML del contenedor
-                    soup_actualizado = BeautifulSoup(div_mapa.get_attribute('outerHTML'), 'html.parser')
-                    
-                    # Buscamos las tablas de estadísticas
-                    tablas = soup_actualizado.find_all('table', class_='wf-table-inset')
-
-                    for tabla in tablas:
-                        filas = tabla.find_all('tr')
-
-                        for fila in filas:
-                            # Verificar si es una fila de jugador
-                            celda_jugador = fila.find('td', class_='mod-player')
-                            if not celda_jugador: 
-                                continue
-
-                            # --- EXTRACCIÓN DE DATOS ---
-                            
-                            # 1. Nombre Jugador y Equipo
-                            div_jugador = celda_jugador.find('div', class_='text-of')
-                            player_name = div_jugador.get_text(strip=True) if div_jugador else "Unknown"
-                            
-                            div_equipo = celda_jugador.find('div', class_='ge-text-light')
-                            team_name = div_equipo.get_text(strip=True) if div_equipo else "Unknown"
-
-                            # 2. Agente (desde la imagen)
-                            celda_agente = fila.find('td', class_='mod-agents')
-                            agent = "Unknown"
-                            if celda_agente:
-                                img_agente = celda_agente.find('img')
-                                if img_agente and 'title' in img_agente.attrs:
-                                    agent = img_agente['title']
-
-                            # 3. Estadísticas Numéricas
-                            # Cada celda tiene múltiples <span> con clases diferentes:
-                            # - mod-both (All), mod-t (Attack), mod-ct (Defense)
-                            # Necesitamos extraer solo el valor correcto según el lado
-                            
-                            # Determinar qué clase buscar según el lado actual
-                            side_class = f"mod-{data_side_valor}"  # 't' o 'ct'
-                            
-                            stats_cells = fila.find_all('td', class_='mod-stat')
-                            
-                            # Verificar que tenemos suficientes columnas
-                            if len(stats_cells) < 11:
-                                print(f"    ⚠️ Fila incompleta para {player_name}, saltando...")
-                                continue
-                            
-                            # Función auxiliar para extraer el valor correcto
-                            def extraer_stat(cell, side_class):
-                                span = cell.find('span', class_=lambda c: c and side_class in c)
-                                if span:
-                                    return span.get_text(strip=True).replace('%', '')
-                                return "0"
-                            
-                            # INDICES: 0:R, 1:ACS, 2:K, 3:D, 4:A, 5:+/-, 6:KAST, 7:ADR, 8:HS%, 9:FK, 10:FD
-                            rating = extraer_stat(stats_cells[0], side_class)
-                            acs = extraer_stat(stats_cells[1], side_class)
-                            kills = extraer_stat(stats_cells[2], side_class)
-                            deaths = extraer_stat(stats_cells[3], side_class)
-                            assists = extraer_stat(stats_cells[4], side_class)
-                            # diff = stats_cells[5] (LO SALTAMOS)
-                            kast = extraer_stat(stats_cells[6], side_class)
-                            adr = extraer_stat(stats_cells[7], side_class)
-                            hs_perc = extraer_stat(stats_cells[8], side_class)
-                            fk = extraer_stat(stats_cells[9], side_class)
-                            fd = extraer_stat(stats_cells[10], side_class)
-
-                            # Guardar fila
-                            datos_partido.append({
-                                'match_id': match_id,
-                                'map_id': map_id,
-                                'player_name': player_name,
-                                'team_name': team_name,
-                                'side': nombre_lado,
-                                'agent': agent,
-                                'rating': rating,
-                                'acs': acs,
-                                'kills': kills,
-                                'deaths': deaths,
-                                'assists': assists,
-                                'kast': kast,
-                                'adr': adr,
-                                'hs_percent': hs_perc,
-                                'fk': fk,
-                                'fd': fd
-                            })
-
-                except Exception as e_tab:
-                    print(f"    ⚠️ Error en pestaña {nombre_lado} de {map_name}: {e_tab}")
-                    import traceback
-                    traceback.print_exc()
-
-        except Exception as e_map:
-            print(f"  ❌ Error procesando mapa: {e_map}")
-            import traceback
-            traceback.print_exc()
+        game_id = div_mapa.get('data-game-id')
+        if not game_id or game_id == 'all':
             continue
 
+        map_div = div_mapa.find('div', class_='map')
+        if not map_div:
+            continue
+
+        map_name_raw = map_div.get_text(strip=True)
+        map_name = map_name_raw.split()[0]
+        map_id = f"{match_id}_{map_name.lower()}"
+        print(f"   📍 Mapa: {map_name} ({map_id})")
+
+        mapa_tags = construir_mapa_tags(div_mapa, global_team_a, global_team_b, team_a_id, team_b_id)
+        if len(mapa_tags) < 2:
+            print(f"      ⚠️  No se pudo leer el par tag→equipo real de este mapa "
+                  f"(nombres/tags insuficientes); los team_id de este mapa quedarán vacíos")
+
+        filas = div_mapa.find_all('div', class_='ovw-row')
+        for fila in filas:
+            celda_jugador = fila.find('div', class_='ovw-cell mod-player')
+            if not celda_jugador:
+                continue
+
+            a_tag = celda_jugador.find('a', href=True)
+            if not a_tag:
+                continue
+
+            m_pid = re.search(r'/player/(\d+)/', a_tag['href'])
+            player_id = int(m_pid.group(1)) if m_pid else None
+
+            nombre_div = a_tag.find('div', class_='ovw-player-name')
+            player_name = nombre_div.get_text(strip=True) if nombre_div else "Unknown"
+
+            tag_div = a_tag.find('div', class_='ovw-player-tag')
+            team_tag = tag_div.get_text(strip=True) if tag_div else ""
+
+            team_id, team_name = mapa_tags.get(team_tag, (None, None))
+            if team_id is None:
+                print(f"      ⚠️  No se pudo resolver el tag '{team_tag}' de {player_name} "
+                      f"contra {global_team_a}/{global_team_b}")
+
+            agente = "Unknown"
+            agentes_div = fila.find('div', class_='ovw-agents')
+            if agentes_div:
+                img = agentes_div.find('img')
+                if img and img.get('title'):
+                    agente = img['title']
+
+            # Todas las celdas (y sub-celdas de K/D/A) que traen data-col
+            celdas_por_col = {}
+            for el in fila.find_all(attrs={'data-col': True}):
+                celdas_por_col[el['data-col']] = el
+
+            def extraer(col_name, side_class):
+                el = celdas_por_col.get(col_name)
+                if not el:
+                    return None
+                span = el.find('span', class_=lambda c: c and side_class in c.split())
+                return span.get_text(strip=True).replace('%', '') if span else None
+
+            for nombre_lado, side_class in [('attack', 'mod-t'), ('defense', 'mod-ct')]:
+                datos_partido.append({
+                    'match_id': match_id,
+                    'map_id': map_id,
+                    'player_id': player_id,
+                    'player_name': player_name,
+                    'team_id': team_id,
+                    'team_name': team_name,
+                    'side': nombre_lado,
+                    'agent': agente,
+                    'rating': extraer('rating2', side_class),
+                    'acs': extraer('acs', side_class),
+                    'kills': extraer('kills', side_class),
+                    'deaths': extraer('deaths', side_class),
+                    'assists': extraer('assists', side_class),
+                    'kast': extraer('kast', side_class),
+                    'adr': extraer('adr', side_class),
+                    'hs_percent': extraer('hsp', side_class),
+                    'fk': extraer('fb', side_class),
+                    'fd': extraer('fd', side_class),
+                })
+
     return datos_partido
+
 
 # --- MAIN ---
 if __name__ == "__main__":
     print("🚀 Iniciando extracción de estadísticas por lado...")
-    print("="*60)
-    
-    # Configurar Chrome
-    options = Options()
-    options.add_argument("--headless")  # Sin ventana visible
-    options.add_argument("--start-maximized")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    
+    print("=" * 60)
+
     try:
-        driver = webdriver.Chrome(
-            service=Service(ChromeDriverManager().install()), 
-            options=options
-        )
+        driver = crear_driver(headless=True)
     except Exception as e:
         print(f"❌ Error inicializando driver: {e}")
         exit()
@@ -257,36 +247,34 @@ if __name__ == "__main__":
             else:
                 print(f"  ⚠️ No se extrajeron datos")
 
-        # Guardar a Excel
         if todos_los_datos:
             df = pd.DataFrame(todos_los_datos)
-            
-            # Ordenar columnas
-            cols_order = ['match_id', 'map_id', 'player_name', 'team_name', 'side', 'agent', 
-                          'rating', 'acs', 'kills', 'deaths', 'assists', 'kast', 'adr', 
-                          'hs_percent', 'fk', 'fd']
-            
+
+            cols_order = ['match_id', 'map_id', 'player_id', 'player_name', 'team_id', 'team_name',
+                          'side', 'agent', 'rating', 'acs', 'kills', 'deaths', 'assists', 'kast',
+                          'adr', 'hs_percent', 'fk', 'fd']
             df = df[cols_order]
-            
+
             archivo_salida = os.path.join(OUTPUT_DIR, "vlr_stats_players_sides.xlsx")
             df.to_excel(archivo_salida, index=False)
-            
-            print("\n" + "="*60)
+
+            print("\n" + "=" * 60)
             print(f"✅ ¡Éxito! Archivo guardado: {archivo_salida}")
             print(f"\n📊 RESUMEN:")
             print(f"   • Total de filas: {len(df)}")
             print(f"   • Jugadores únicos: {df['player_name'].nunique()}")
             print(f"   • Mapas: {df['map_id'].nunique()}")
+            print(f"   • Filas sin team_id resuelto: {df['team_id'].isna().sum()}")
             print("\n📋 Preview (primeras 10 filas):")
             print(df.head(10).to_string(index=False))
         else:
             print("\n⚠️ No se extrajeron datos.")
-            
+
     except Exception as e:
         print(f"\n❌ Error durante el scraping: {e}")
         import traceback
         traceback.print_exc()
-        
+
     finally:
         if 'driver' in locals():
             driver.quit()

@@ -2,11 +2,10 @@ import time
 import os
 import pandas as pd
 import re
+import sys
 from bs4 import BeautifulSoup
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
-from selenium.webdriver.chrome.options import Options
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from driver_setup import crear_driver
 
 # Carpeta de salida relativa al script
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'output_data')
@@ -62,6 +61,66 @@ def cargar_enlaces_desde_txt():
 
 ENLACES, OUTPUT_DIR = cargar_enlaces_desde_txt()
 
+def esperar_carga_completa(driver, max_espera=15, intervalo=0.5):
+    """
+    En vez de un time.sleep() fijo, espera hasta que la cantidad de
+    cuadros de ronda (.rnd-sq) en la página deje de crecer, lo que
+    indica que el JS ya terminó de renderizar los 3 mapas.
+    """
+    from selenium.webdriver.common.by import By
+
+    anterior = -1
+    estable = 0
+    transcurrido = 0.0
+
+    while transcurrido < max_espera:
+        time.sleep(intervalo)
+        transcurrido += intervalo
+        actual = len(driver.find_elements(By.CLASS_NAME, "rnd-sq"))
+
+        if actual == anterior and actual > 0:
+            estable += 1
+            if estable >= 2:  # 2 lecturas iguales seguidas = ya cargó
+                return
+        else:
+            estable = 0
+        anterior = actual
+    # si se acaba el tiempo, seguimos igual (mejor esfuerzo)
+
+
+def construir_siglas_reales(soup, global_team_a, global_team_b):
+    """Lee las siglas reales que VLR.gg asigna a cada equipo en este partido
+    (ej. 'TL', 'GX') desde la primera columna del bloque vlr-rounds del DOM.
+    Mismo patrón que construir_mapa_tags() en scrapear_stats_pro.py.
+
+    Devuelve {sigla_lower: 'A'|'B'} o {} si no se pueden leer del DOM.
+    Solo se necesita el primer mapa disponible: las siglas son idénticas en todos.
+    """
+    for contenedor in soup.find_all('div', class_='vm-stats-game'):
+        if contenedor.get('data-game-id') in (None, 'all'):
+            continue
+        nombres = [d.get_text(strip=True)
+                   for d in contenedor.find_all('div', class_='team-name')]
+        rc = contenedor.find('div', class_='vlr-rounds')
+        if not rc:
+            continue
+        col0 = rc.find_all('div', class_='vlr-rounds-row-col')
+        if not col0:
+            continue
+        tags = [d.get_text(strip=True)
+                for d in col0[0].find_all('div', class_='team')]
+        if len(nombres) >= 2 and len(tags) >= 2:
+            mapa = {}
+            for nombre, tag in zip(nombres[:2], tags[:2]):
+                if nombre == global_team_a:
+                    mapa[tag.lower()] = 'A'
+                elif nombre == global_team_b:
+                    mapa[tag.lower()] = 'B'
+            if mapa:
+                return mapa
+    return {}
+
+
 def obtener_datos_partido(driver, url):
     """
     Extrae datos de mapas y rondas de un partido de VLR.gg
@@ -69,11 +128,11 @@ def obtener_datos_partido(driver, url):
     print(f"   🌐 Navegando a: {url}")
     try:
         driver.get(url)
-        time.sleep(3) 
+        esperar_carga_completa(driver)
         html = driver.page_source
     except Exception as e:
         print(f"   ❌ Error cargando link: {e}")
-        return None, None
+        return None, None, False
 
     soup = BeautifulSoup(html, 'html.parser')
     
@@ -101,6 +160,26 @@ def obtener_datos_partido(driver, url):
         global_team_a, global_team_b = "TeamA", "TeamB"
 
     print(f"   🎮 Equipos: {global_team_a} vs {global_team_b}")
+
+    # --- 2b. EXTRAER team_id DESDE LOS ENLACES DEL HEADER ---
+    # mod-1 = team A, mod-2 = team B
+    # El href puede venir relativo (/team/1120/...) o absoluto (https://www.vlr.gg/team/1120/...)
+    team_a_id, team_b_id = None, None
+    for a_tag in soup.find_all('a', class_='match-header-link'):
+        clases = a_tag.get('class', [])
+        href = a_tag.get('href') or ""
+        m_id = re.search(r'/team/(\d+)', href)
+        if not m_id:
+            continue
+        if 'mod-1' in clases:
+            team_a_id = int(m_id.group(1))
+        elif 'mod-2' in clases:
+            team_b_id = int(m_id.group(1))
+
+    if team_a_id is None or team_b_id is None:
+        print(f"   ⚠️  No se pudo extraer team_id (A={team_a_id}, B={team_b_id})")
+    else:
+        print(f"   🆔 IDs: {global_team_a}={team_a_id}, {global_team_b}={team_b_id}")
 
     # --- 3. DETECTAR ABREVIATURAS EN EL VETO ---
 
@@ -136,18 +215,30 @@ def obtener_datos_partido(driver, url):
     team_a_abbrev = None
     team_b_abbrev = None
 
+    # Criterio 0 (prioritario): siglas reales leídas del DOM (vlr-rounds, col 0)
+    # Mismo patrón que construir_mapa_tags() en scrapear_stats_pro.py.
+    # Resuelve equipos como GIANTX→gx que fallan con la heurística de texto.
+    siglas_dom = construir_siglas_reales(soup, global_team_a, global_team_b)
+
     for abbrev in team_abbrevs:
-        # Criterio 1: startswith  (cubre: loud, nrg, lev, fur, sen, mibr...)
-        # Criterio 2: generar_abbrev (cubre: c9→Cloud9, 100t→100 Thieves)
-        if global_team_a.lower().startswith(abbrev) or generar_abbrev(global_team_a) == abbrev:
+        lado = siglas_dom.get(abbrev)
+        if lado == 'A':
+            team_a_abbrev = abbrev
+        elif lado == 'B':
+            team_b_abbrev = abbrev
+        # Fallback heurístico (Criterios 1 y 2) para cuando el DOM no da siglas
+        elif global_team_a.lower().startswith(abbrev) or generar_abbrev(global_team_a) == abbrev:
             team_a_abbrev = abbrev
         elif global_team_b.lower().startswith(abbrev) or generar_abbrev(global_team_b) == abbrev:
             team_b_abbrev = abbrev
 
-    print(f"   📝 Abreviaturas: {global_team_a}→{team_a_abbrev}, {global_team_b}→{team_b_abbrev}")
+    print(f"   📝 Abreviaturas: {global_team_a}→{team_a_abbrev}, {global_team_b}→{team_b_abbrev}"
+          f"  (DOM: {siglas_dom})")
+
 
     map_data = []
     round_data = []
+    validaciones = []
 
     # --- 4. ITERAR SOBRE CADA MAPA ---
     contenedores = soup.find_all('div', class_='vm-stats-game')
@@ -193,6 +284,17 @@ def obtener_datos_partido(driver, url):
             continue
         team_top_name = teams_visual[0].get_text(strip=True)
         team_bottom_name = teams_visual[1].get_text(strip=True)
+
+        # --- Resolver qué team_id corresponde a la fila superior/inferior ---
+        if team_top_name == global_team_a:
+            team_top_id, team_bot_id = team_a_id, team_b_id
+        elif team_top_name == global_team_b:
+            team_top_id, team_bot_id = team_b_id, team_a_id
+        else:
+            # Fallback posicional: la fila superior es el equipo A del header
+            team_top_id, team_bot_id = team_a_id, team_b_id
+            print(f"      ⚠️  '{team_top_name}' no coincide con el header "
+                  f"('{global_team_a}'/'{global_team_b}'); usando orden posicional")
         
         dur_div = contenedor.find('div', class_='map-duration')
         duration = dur_div.get_text(strip=True) if dur_div else "00:00"
@@ -204,7 +306,9 @@ def obtener_datos_partido(driver, url):
         if not rounds_container: 
             continue
 
+        rondas_antes = len(round_data)
         cols = rounds_container.find_all('div', class_='vlr-rounds-row-col')
+        print(f"      🔍 DEBUG {map_name}: total columnas encontradas en el DOM = {len(cols)}")
         sa_attack, sa_defense, sb_attack, sb_defense = 0, 0, 0, 0
         side_top_start = None  # lado en que team_top empezó el mapa
         side_chosen = None
@@ -216,15 +320,18 @@ def obtener_datos_partido(driver, url):
                 
             num_div = col.find('div', class_='rnd-num')
             if not num_div: 
+                print(f"      🔍 DEBUG col idx={idx}: sin rnd-num, se salta")
                 continue
             
             try: 
                 num = int(num_div.get_text(strip=True))
             except: 
+                print(f"      🔍 DEBUG col idx={idx}: rnd-num no numérico ({num_div.get_text(strip=True)!r}), se salta")
                 continue
 
             squares = col.find_all('div', class_='rnd-sq')
             if len(squares) < 2: 
+                print(f"      🔍 DEBUG col idx={idx} num={num}: solo {len(squares)} cuadro(s), se salta")
                 continue
             
             sq_top, sq_bottom = squares[0], squares[1]
@@ -281,24 +388,26 @@ def obtener_datos_partido(driver, url):
                         print(f"      → {global_team_a} eligió {side_bottom}")
 
             # --- Determinar ganador de la ronda ---
-            winner = ""
+            winner = None
             res_type = "elim"
             win_band = ""
 
             if "mod-win" in sq_top.get('class', []):
-                winner = team_top_name
+                winner = team_top_id
                 win_band = "attack" if "mod-t" in sq_top.get('class', []) else "defense"
                 img = sq_top.find('img')
                 if win_band == "attack": sa_attack += 1
                 else: sa_defense += 1
                 
             elif "mod-win" in sq_bottom.get('class', []):
-                winner = team_bottom_name
+                winner = team_bot_id
                 win_band = "attack" if "mod-t" in sq_bottom.get('class', []) else "defense"
                 img = sq_bottom.find('img')
                 if win_band == "attack": sb_attack += 1
                 else: sb_defense += 1
             else:
+                print(f"      🔍 DEBUG col idx={idx} num={num}: ningún cuadro tiene mod-win, se salta "
+                      f"(clases top={sq_top.get('class', [])}, bottom={sq_bottom.get('class', [])})")
                 continue
 
             src = img['src'] if img else ""
@@ -332,6 +441,13 @@ def obtener_datos_partido(driver, url):
             pick_a_result = side_chosen.capitalize() if side_chosen else "Unknown"
             pick_b_result = map_name
 
+        rondas_capturadas = len(round_data) - rondas_antes
+        rondas_esperadas = sa_attack + sa_defense + sb_attack + sb_defense
+        if rondas_capturadas != rondas_esperadas:
+            print(f"      ⚠️  {map_name}: capturadas {rondas_capturadas} rondas, "
+                  f"se esperaban {rondas_esperadas} según el marcador")
+        validaciones.append(rondas_capturadas == rondas_esperadas)
+
         map_data.append({
             'match_id': match_id,
             'pick_a': pick_a_result,
@@ -343,24 +459,15 @@ def obtener_datos_partido(driver, url):
             'round_id': round_id_val
         })
         
-    return map_data, round_data
+    return map_data, round_data, all(validaciones) if validaciones else False
 
 # --- EJECUCIÓN PRINCIPAL ---
 if __name__ == "__main__":
     print("🚀 Iniciando web scraping de VLR.gg...")
     print("="*60)
     
-    options = Options()
-    options.add_argument("--start-maximized")
-    options.add_argument("--headless")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-
     try:
-        driver = webdriver.Chrome(
-            service=Service(ChromeDriverManager().install()), 
-            options=options
-        )
+        driver = crear_driver(headless=True)
     except Exception as e:
         print(f"❌ Error inicializando driver: {e}")
         exit()
@@ -371,11 +478,20 @@ if __name__ == "__main__":
     try:
         for i, link in enumerate(ENLACES):
             print(f"\n[{i+1}/{len(ENLACES)}] Procesando partido...")
-            mapas, rondas = obtener_datos_partido(driver, link)
-            
-            if mapas: 
+
+            mapas, rondas, ok = obtener_datos_partido(driver, link)
+            intentos = 1
+            while not ok and intentos < 3:
+                intentos += 1
+                print(f"   🔁 Reintentando ({intentos}/3) por rondas inconsistentes...")
+                mapas, rondas, ok = obtener_datos_partido(driver, link)
+
+            if not ok:
+                print(f"   ⚠️⚠️  Este partido quedó con inconsistencias tras 3 intentos: {link}")
+
+            if mapas:
                 todos_mapas.extend(mapas)
-            if rondas: 
+            if rondas:
                 todas_rondas.extend(rondas)
         
         print("\n" + "="*60)
