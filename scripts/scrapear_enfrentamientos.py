@@ -64,6 +64,30 @@ def cargar_enlaces_desde_txt():
 
 ENLACES, OUTPUT_DIR = cargar_enlaces_desde_txt()
 
+
+def esperar_disponible(driver, condicion, timeout=15):
+    """Espera best-effort a que se cumpla `condicion`.
+
+    Devuelve True si se cumplió, False si expiró. Nunca lanza excepción: si
+    expira, el llamador decide si continúa, de modo que un timeout puntual no
+    provoca pérdida de datos. Sustituye a los `time.sleep()` fijos: espera
+    solo lo necesario cuando la página ya está lista.
+    """
+    try:
+        WebDriverWait(driver, timeout).until(condicion)
+        return True
+    except Exception:
+        return False
+
+
+def esperar_performance_listo(driver, timeout=15):
+    """Espera a que la pestaña performance tenga la barra de selección de mapas."""
+    return esperar_disponible(
+        driver,
+        EC.presence_of_element_located((By.CSS_SELECTOR, "a.vm-stats-gamesnav-item")),
+        timeout,
+    )
+
 def obtener_mapas_jugados(driver, match_id):
     """
     Detecta qué mapas se jugaron en el partido
@@ -92,9 +116,11 @@ def obtener_mapas_jugados(driver, match_id):
     
     return mapas
 
-def obtener_enfrentamientos_por_mapa(driver, url):
+def obtener_enfrentamientos_por_mapa(driver, url, cargar_pagina=True):
     """
-    Extrae las matrices de enfrentamientos por cada mapa jugado
+    Extrae las matrices de enfrentamientos por cada mapa jugado.
+    Con cargar_pagina=False se asume que el driver ya está en la pestaña
+    performance (evita recargarla dos veces por partido).
     """
     print(f"🌐 Procesando enfrentamientos: {url}")
     
@@ -110,14 +136,14 @@ def obtener_enfrentamientos_por_mapa(driver, url):
     else:
         performance_url = url.rstrip('/') + '/?tab=performance'
     
-    print(f"  🔗 Navegando a: {performance_url}")
-    
-    try:
-        driver.get(performance_url)
-        time.sleep(4)
-    except Exception as e:
-        print(f"❌ Error cargando URL: {e}")
-        return []
+    if cargar_pagina:
+        print(f"  🔗 Navegando a: {performance_url}")
+        try:
+            driver.get(performance_url)
+        except Exception as e:
+            print(f"❌ Error cargando URL: {e}")
+            return []
+        esperar_performance_listo(driver)
 
     # Detectar mapas jugados
     mapas = obtener_mapas_jugados(driver, match_id)
@@ -145,17 +171,19 @@ def obtener_enfrentamientos_por_mapa(driver, url):
         print(f"\n  📍 Procesando mapa: {map_name} (ID: {game_id})")
         
         # Hacer clic en el botón del mapa
+        # [CORRECCIÓN APLICADA]: Selector CSS actualizado a 'a.vm-stats...'
         try:
-            # [CORRECCIÓN APLICADA]: Selector CSS actualizado a 'a.vm-stats...'
             map_button = driver.find_element(
                 By.CSS_SELECTOR,
                 f"a.vm-stats-gamesnav-item[data-game-id='{game_id}']"
             )
             driver.execute_script("arguments[0].click();", map_button)
-            time.sleep(2)
         except Exception as e:
             print(f"    ⚠️ Error haciendo clic en mapa: {e}")
             continue
+        # Best-effort: el contenedor ya está en el DOM (VLR alterna show/hide por JS).
+        esperar_disponible(driver, EC.visibility_of_element_located(
+            (By.CSS_SELECTOR, f"div.vm-stats-game[data-game-id='{game_id}']")))
         
         # Iterar sobre cada tipo de kill
         for tipo_nombre, data_matrix in tipos_kill.items():
@@ -164,18 +192,22 @@ def obtener_enfrentamientos_por_mapa(driver, url):
                 
                 # Hacer clic en el filtro de tipo de kill
                 try:
-                    wait = WebDriverWait(driver, 10)
-                    wait.until(EC.presence_of_element_located((By.CLASS_NAME, "js-matrix-filter")))
-                    
+                    WebDriverWait(driver, 10).until(
+                        EC.presence_of_element_located((By.CLASS_NAME, "js-matrix-filter")))
                     boton = driver.find_element(
-                        By.CSS_SELECTOR, 
+                        By.CSS_SELECTOR,
                         f"div.js-matrix-filter div[data-matrix='{data_matrix}']"
                     )
                     driver.execute_script("arguments[0].click();", boton)
-                    time.sleep(1.5)
                 except Exception as e:
                     print(f"      ⚠️ Error con botón {tipo_nombre}: {e}")
                     continue
+                # Best-effort: la matriz ya está en el DOM; el filtro solo la muestra/oculta.
+                esperar_disponible(
+                    driver,
+                    EC.visibility_of_element_located((By.CSS_SELECTOR,
+                        f"div.vm-stats-game[data-game-id='{game_id}'] table.mod-matrix.mod-{data_matrix}")),
+                    timeout=5)
                 
                 # Obtener HTML actualizado
                 soup = BeautifulSoup(driver.page_source, 'html.parser')
@@ -279,9 +311,11 @@ def obtener_enfrentamientos_por_mapa(driver, url):
     
     return todos_enfrentamientos
 
-def obtener_multikills_por_mapa(driver, url):
+def obtener_multikills_por_mapa(driver, url, cargar_pagina=True):
     """
-    Extrae multikills y clutches por cada mapa jugado
+    Extrae multikills y clutches por cada mapa jugado.
+    Con cargar_pagina=False se asume que el driver ya está en la pestaña
+    performance (evita recargarla dos veces por partido).
     """
     print(f"\n🎯 Procesando multikills y clutches: {url}")
     
@@ -297,12 +331,13 @@ def obtener_multikills_por_mapa(driver, url):
     else:
         performance_url = url.rstrip('/') + '/?tab=performance'
     
-    try:
-        driver.get(performance_url)
-        time.sleep(4)
-    except Exception as e:
-        print(f"❌ Error cargando URL: {e}")
-        return []
+    if cargar_pagina:
+        try:
+            driver.get(performance_url)
+        except Exception as e:
+            print(f"❌ Error cargando URL: {e}")
+            return []
+        esperar_performance_listo(driver)
 
     # Detectar mapas
     mapas = obtener_mapas_jugados(driver, match_id)
@@ -322,17 +357,19 @@ def obtener_multikills_por_mapa(driver, url):
         print(f"  📍 Procesando mapa: {map_name}")
         
         # Hacer clic en el botón del mapa
+        # [CORRECCIÓN APLICADA]: Selector CSS actualizado a 'a.vm-stats...'
         try:
-            # [CORRECCIÓN APLICADA]: Selector CSS actualizado a 'a.vm-stats...'
             map_button = driver.find_element(
                 By.CSS_SELECTOR,
                 f"a.vm-stats-gamesnav-item[data-game-id='{game_id}']"
             )
             driver.execute_script("arguments[0].click();", map_button)
-            time.sleep(2)
         except Exception as e:
             print(f"    ⚠️ Error haciendo clic en mapa: {e}")
             continue
+        # Best-effort: el contenedor ya está en el DOM (VLR alterna show/hide por JS).
+        esperar_disponible(driver, EC.visibility_of_element_located(
+            (By.CSS_SELECTOR, f"div.vm-stats-game[data-game-id='{game_id}']")))
         
         # Obtener HTML
         soup = BeautifulSoup(driver.page_source, 'html.parser')
@@ -455,15 +492,29 @@ if __name__ == "__main__":
         for i, link in enumerate(ENLACES):
             print(f"\n{'='*60}")
             print(f"[{i+1}/{len(ENLACES)}] Procesando partido...")
-            
+
+            # Cargar la pestaña performance UNA sola vez por partido y reutilizarla
+            # en los dos pases (enfrentamientos y multikills). Reduce a la mitad
+            # las peticiones a VLR.gg.
+            if '?' in link:
+                performance_url = link.split('?')[0] + '?tab=performance'
+            else:
+                performance_url = link.rstrip('/') + '/?tab=performance'
+            try:
+                driver.get(performance_url)
+            except Exception as e:
+                print(f"  ❌ Error cargando {performance_url}: {e}")
+                continue
+            esperar_performance_listo(driver)
+
             # Extraer enfrentamientos
-            enfrentamientos = obtener_enfrentamientos_por_mapa(driver, link)
+            enfrentamientos = obtener_enfrentamientos_por_mapa(driver, link, cargar_pagina=False)
             if enfrentamientos:
                 todos_enfrentamientos.extend(enfrentamientos)
                 print(f"\n  ✅ {len(enfrentamientos)} enfrentamientos extraídos")
             
             # Extraer multikills
-            multikills = obtener_multikills_por_mapa(driver, link)
+            multikills = obtener_multikills_por_mapa(driver, link, cargar_pagina=False)
             if multikills:
                 todos_multikills.extend(multikills)
                 print(f"  ✅ {len(multikills)} filas de multikills extraídas")

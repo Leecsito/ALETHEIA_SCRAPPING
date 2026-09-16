@@ -3,6 +3,9 @@ import os
 import pandas as pd
 import re
 from bs4 import BeautifulSoup
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from driver_setup import crear_driver
@@ -56,6 +59,21 @@ def cargar_enlaces_desde_txt():
 ENLACES, OUTPUT_DIR = cargar_enlaces_desde_txt()
 
 
+def esperar_disponible(driver, condicion, timeout=15):
+    """Espera best-effort a que se cumpla `condicion`.
+
+    Devuelve True si se cumplió, False si expiró. Nunca lanza excepción: si
+    expira, el llamador decide si continúa, de modo que un timeout puntual no
+    provoca pérdida de datos. Sustituye a los `time.sleep()` fijos: espera
+    solo lo necesario cuando la página ya está lista.
+    """
+    try:
+        WebDriverWait(driver, timeout).until(condicion)
+        return True
+    except Exception:
+        return False
+
+
 def generar_abbrev(nombre):
     """Misma heurística usada en scrapear_vlr_corregido.py para resolver abreviaturas."""
     tokens = re.findall(r'\d+|[a-zA-ZÀ-ÿ]+', nombre)
@@ -99,11 +117,13 @@ def obtener_stats_detalladas(driver, url):
     print(f"🌐 Procesando: {url}")
     try:
         driver.get(url)
-        time.sleep(3)
-        html = driver.page_source
     except Exception as e:
         print(f"❌ Error cargando URL: {e}")
         return []
+    # Best-effort: esperar a que la tabla overview (ovw-row) esté en el DOM.
+    esperar_disponible(driver, EC.presence_of_element_located(
+        (By.CSS_SELECTOR, "div.ovw-row")))
+    html = driver.page_source
 
     soup = BeautifulSoup(html, 'html.parser')
 

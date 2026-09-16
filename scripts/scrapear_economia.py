@@ -5,6 +5,8 @@ import re
 import requests
 from bs4 import BeautifulSoup
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from driver_setup import crear_driver
@@ -195,6 +197,21 @@ def construir_tag_map(soup_overview, global_team_a, global_team_b, team_a_id, te
             tag_map[tag] = (team_b_id, global_team_b)
     return tag_map
 
+def esperar_disponible(driver, condicion, timeout=15):
+    """Espera best-effort a que se cumpla `condicion`.
+
+    Devuelve True si se cumplió, False si expiró. Nunca lanza excepción: si
+    expira, el llamador decide si continúa, de modo que un timeout puntual no
+    provoca pérdida de datos. Sustituye a los `time.sleep()` fijos: espera
+    solo lo necesario cuando la página ya está lista.
+    """
+    try:
+        WebDriverWait(driver, timeout).until(condicion)
+        return True
+    except Exception:
+        return False
+
+
 def obtener_economia(driver, url):
     """
     Extrae datos de economía por mapa. Genera dos tablas:
@@ -214,10 +231,12 @@ def obtener_economia(driver, url):
     print(f"  🔗 Navegando a: {economy_url}")
     try:
         driver.get(economy_url)
-        time.sleep(4)
     except Exception as e:
         print(f"❌ Error cargando URL: {e}")
         return [], []
+    # Best-effort: esperar a que la pestaña economía renderice sus tablas.
+    esperar_disponible(driver, EC.presence_of_element_located(
+        (By.CSS_SELECTOR, "div.vm-stats-game table.mod-econ")))
 
     soup = BeautifulSoup(driver.page_source, 'html.parser')
     mapas = obtener_mapas(soup, match_id)
@@ -255,10 +274,12 @@ def obtener_economia(driver, url):
             btn = driver.find_element(By.CSS_SELECTOR,
                 f".vm-stats-gamesnav-item[data-game-id='{game_id}']")
             driver.execute_script("arguments[0].click();", btn)
-            time.sleep(2)
         except Exception as e:
             print(f"    ⚠️ Error clic mapa: {e}")
             continue
+        # Best-effort: el contenedor del mapa ya está en el DOM (show/hide por JS).
+        esperar_disponible(driver, EC.visibility_of_element_located(
+            (By.CSS_SELECTOR, f"div.vm-stats-game[data-game-id='{game_id}']")))
 
         soup      = BeautifulSoup(driver.page_source, 'html.parser')
         contenedor = soup.find('div', class_='vm-stats-game', attrs={'data-game-id': game_id})

@@ -7,6 +7,7 @@ import subprocess
 import sys
 import os
 import time
+import threading
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 
 if hasattr(sys.stdout, 'reconfigure'):
@@ -97,6 +98,9 @@ SCRIPTS = {
 SCRIPTS_PARALELOS = ["2", "3", "4", "5", "6"]
 # Scripts que siempre corren en secuencia (prerequisitos)
 SCRIPTS_SECUENCIALES = ["0", "1", "7"]
+# Nº máximo de scripts simultáneos. Cada uno abre su propio Chrome, así que
+# bajarlo reduce el consumo de RAM (útil en equipos con poca memoria).
+MAX_PARALELOS = 5
 
 
 def archivos_esperados_evento(nombre_evento):
@@ -124,6 +128,77 @@ def carpeta_evento_completa(nombre_evento, carpeta):
     faltantes = [f for f in archivos_esperados_evento(nombre_evento)
                  if not os.path.exists(os.path.join(carpeta, f))]
     return (not faltantes), faltantes
+
+
+# ── Control de procesos hijos (evita navegadores huérfanos) ──────────────────
+# Al interrumpir con Ctrl+C, subprocess.run() mata solo al script Python hijo,
+# NO a sus nietos (chromedriver y chrome.exe). Esos navegadores quedan vivos,
+# se acumulan entre corridas y terminan agotando la RAM del equipo. Aquí se
+# registran los hijos para poder matar su ÁRBOL completo (taskkill /T).
+_PROCESOS_ACTIVOS = {}
+_PROCESOS_LOCK = threading.Lock()
+
+
+def _registrar_proceso(proceso):
+    with _PROCESOS_LOCK:
+        _PROCESOS_ACTIVOS[proceso.pid] = proceso
+
+
+def _desregistrar_proceso(proceso):
+    with _PROCESOS_LOCK:
+        _PROCESOS_ACTIVOS.pop(proceso.pid, None)
+
+
+def matar_procesos_activos():
+    """Termina el árbol de procesos de cada script hijo en ejecución.
+
+    En Windows `taskkill /F /T /PID` elimina también a los descendientes
+    (chromedriver y chrome.exe), evitando que queden huérfanos.
+    """
+    with _PROCESOS_LOCK:
+        procesos = list(_PROCESOS_ACTIVOS.values())
+    if not procesos:
+        return
+    print(f"\n⛔ Cerrando {len(procesos)} proceso(s) hijo y sus navegadores...")
+    for p in procesos:
+        try:
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                p.kill()
+        except Exception:
+            try:
+                p.kill()
+            except Exception:
+                pass
+
+
+def limpiar_navegadores_huerfanos():
+    """Mata navegadores headless de Selenium que quedaran huérfanos de corridas
+    anteriores interrumpidas.
+
+    Se invoca al arrancar main.py: en ese instante no hay scraping en curso, así
+    que cualquier chrome.exe con `--headless`/perfil temporal de WebDriver es
+    necesariamente un huérfano. Sin esta limpieza se van acumulando y agotan la
+    memoria RAM del equipo.
+    """
+    if os.name != "nt":
+        return 0
+    ps = (
+        "$hs = Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" "
+        "| Where-Object { $_.CommandLine -match '--headless' -or $_.CommandLine -match 'scoped_dir' }; "
+        "$n = 0; "
+        "foreach ($p in $hs) { taskkill /F /T /PID $p.ProcessId 2>$null | Out-Null; $n++ }; "
+        "Write-Output $n"
+    )
+    try:
+        res = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                             capture_output=True, text=True, timeout=90)
+        salida = (res.stdout or "").strip()
+        return int(salida.splitlines()[-1]) if salida else 0
+    except Exception:
+        return 0
 
 
 def mostrar_menu():
@@ -228,28 +303,34 @@ def ejecutar_script_paralelo(key, ruta_txt=None, carpeta_evento=None):
     if chromedriver_path:
         env["CHROMEDRIVER_PATH"] = chromedriver_path
 
-    resultado = subprocess.run(
+    proceso = subprocess.Popen(
         [sys.executable, ruta],
         cwd=SCRIPTS_DIR,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
         encoding="utf-8",
         errors="replace",
         env=env,
     )
+    _registrar_proceso(proceso)
+    try:
+        stdout, stderr = proceso.communicate()
+    finally:
+        _desregistrar_proceso(proceso)
 
     separador = "=" * 60
     salida = (
         f"\n{separador}\n"
         f"  {nombre}\n"
         f"{separador}\n"
-        f"{resultado.stdout}"
+        f"{stdout}"
     )
-    if resultado.stderr:
-        salida += f"\nSTDERR:\n{resultado.stderr}"
+    if stderr:
+        salida += f"\nSTDERR:\n{stderr}"
 
-    exito = resultado.returncode == 0
-    salida += f"\n{'OK' if exito else 'ERROR'} [{nombre}] — {'completado' if exito else f'error (codigo {resultado.returncode})'}"
+    exito = proceso.returncode == 0
+    salida += f"\n{'OK' if exito else 'ERROR'} [{nombre}] — {'completado' if exito else f'error (codigo {proceso.returncode})'}"
     return exito, salida
 
 
@@ -368,8 +449,9 @@ def ejecutar_todos():
             else:
                 print("    Nada que ejecutar: la carpeta ya tiene todos sus archivos.")
 
-            futures = {}
-            with ThreadPoolExecutor(max_workers=5) as executor:
+            executor = ThreadPoolExecutor(max_workers=MAX_PARALELOS)
+            try:
+                futures = {}
                 for key in SCRIPTS_PARALELOS:
                     future = executor.submit(ejecutar_script_paralelo, key, ruta_txt, carpeta_evento)
                     futures[future] = key
@@ -391,27 +473,45 @@ def ejecutar_todos():
                             SCRIPTS[futures[f]]["nombre"].split(" (")[0]
                             for f in pendientes)
                         print(f"    ⏳ {transcurrido:4.0f}s — aún ejecutando: {nombres}")
+            except KeyboardInterrupt:
+                # Matar YA los procesos hijos (y sus Chrome) para que los hilos
+                # dejen de bloquearse en communicate(); así no se acumulan
+                # navegadores huérfanos ni se agota la RAM.
+                matar_procesos_activos()
+                raise
+            finally:
+                executor.shutdown(wait=False)
 
     print(f"\n{'=' * 60}")
     print(f"Resultado: {exitos}/{len(SCRIPTS)} scripts completados")
 
 
 def main():
-    while True:
-        mostrar_menu()
-        opcion = input("  Selecciona una opción: ").strip().upper()
+    # Limpieza de seguridad: cierra navegadores de Selenium que hayan quedado
+    # huérfanos de ejecuciones anteriores interrumpidas (evita fugas de RAM).
+    huerfanos = limpiar_navegadores_huerfanos()
+    if huerfanos:
+        print(f"🧹 Limpieza inicial: {huerfanos} navegador(es) huérfano(s) cerrado(s).")
+    try:
+        while True:
+            mostrar_menu()
+            opcion = input("  Selecciona una opción: ").strip().upper()
 
-        if opcion == "Q":
-            print("\n👋 ¡Hasta luego!")
-            break
-        elif opcion == "A":
-            print("\n🔄 Ejecutando todos los scripts...")
-            print("   (Los scripts que ya generaron sus archivos serán omitidos)")
-            ejecutar_todos()
-        elif opcion in SCRIPTS:
-            ejecutar_script(opcion)
-        else:
-            print("  ⚠️ Opción no válida. Intenta de nuevo.")
+            if opcion == "Q":
+                print("\n👋 ¡Hasta luego!")
+                break
+            elif opcion == "A":
+                print("\n🔄 Ejecutando todos los scripts...")
+                print("   (Los scripts que ya generaron sus archivos serán omitidos)")
+                ejecutar_todos()
+            elif opcion in SCRIPTS:
+                ejecutar_script(opcion)
+            else:
+                print("  ⚠️ Opción no válida. Intenta de nuevo.")
+    except KeyboardInterrupt:
+        print("\n\n⛔ Interrupción (Ctrl+C). Cerrando navegadores y procesos hijos...")
+        matar_procesos_activos()
+        print("👋 ¡Hasta luego!")
 
 
 

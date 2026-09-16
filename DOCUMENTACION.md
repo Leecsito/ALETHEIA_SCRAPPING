@@ -108,7 +108,7 @@ Al seleccionar `[A]` en `main.py`, el pipeline evalúa el estado del almacenamie
 3. **Paso 3 — Scraping Concurrente por Lotes de Eventos:**
    - Recorre los `enlaces_*.txt` de `output_data/` y marca como **pendiente** a todo evento cuya carpeta `output_data/<nombre_evento>/` no exista o **no contenga la totalidad de sus archivos de salida** (evento interrumpido a medias). La comprobación (`carpeta_evento_completa()`) es **por evento**, nunca global.
    - Por cada evento pendiente, genera/asegura la subcarpeta `output_data/<nombre_evento>/`.
-   - Lanza en paralelo los 5 scripts analíticos (`2`, `3`, `4`, `5`, `6`) usando `ThreadPoolExecutor(max_workers=5)`. Cada script se omite individualmente si su salida ya existe en la carpeta de ese evento, de modo que un evento incompleto **solo re-ejecuta lo que falta**.
+   - Lanza en paralelo los 5 scripts analíticos (`2`, `3`, `4`, `5`, `6`) usando `ThreadPoolExecutor(max_workers=MAX_PARALELOS)`. Cada script se omite individualmente si su salida ya existe en la carpeta de ese evento, de modo que un evento incompleto **solo re-ejecuta lo que falta**.
    - Inyecta la variable de entorno `ALETHEIA_TXT_FILE` al entorno de cada subproceso para indicarle la ruta exacta del `.txt` sin requerir inputs manuales por consola.
    - **Excepción China:** VLR.gg no publica enfrentamientos (script 5) ni economía (script 6) para esa región. La carpeta de un evento de China se considera completa con solo 4 archivos (`vct_partidos`, `vlr_mapas`, `vlr_rondas`, `vlr_stats_players_sides`); los eventos no-China exigen los 8.
    - **Retroalimentación de progreso:** como la salida de cada subproceso se captura y solo se imprime al finalizar, `main.py` emite un **latido cada 20 s** con el tiempo transcurrido y los scripts aún en ejecución. Antes de lanzar el lote también informa qué scripts se van a ejecutar realmente (el script 5 de enfrentamientos es el más lento: recorre cada mapa y 3 filtros de matriz con esperas de Selenium).
@@ -197,6 +197,7 @@ Todas las regiones —incluida **China**— se procesan con un único motor, `sc
 ### [Script 5] `scrapear_enfrentamientos.py`
 - **Fuente:** Tab de Performance en VLR.gg (`?tab=performance`).
 - **Mecanismo:**
+  - Carga la pestaña *performance* **una sola vez por partido** y reutiliza el DOM para extraer tanto las matrices como los multikills (antes se recargaba dos veces por partido).
   - Navega por cada mapa activo mediante el menú `.vm-stats-gamesnav-item`.
   - **Matrices Head-to-Head:** Alterna entre los tres filtros de matriz:
     - `"all"` (`data-matrix="normal"`): Duelos totales.
@@ -432,8 +433,12 @@ Economía transaccional ronda por ronda.
    VLR.gg agrupa las rondas de pistolas (rondas 1 y 13) dentro del contador de compras `eco`. El script `scrapear_economia.py` resta de forma obligatoria 1 ronda jugada y la victoria correspondiente de la categoría Eco, evitando sesgar los análisis tácticos con rondas de compra forzada obligatoria.
 3. **Manejo de Tiempos y Esperas Dinámicas en Selenium:**  
    Dado que las tablas de estadísticas avanzadas y matrices se inyectan en el DOM cliente mediante eventos JavaScript, los scripts emplean `WebDriverWait` en conjunción con ejecución de clicks nativos con script (`driver.execute_script("arguments[0].click();", elemento)`), garantizando que los elementos no queden tapados por headers flotantes o banners de VLR.gg.
-4. **Idempotencia y Resiliencia en Ejecuciones por Lotes:**  
+4. **Optimización de Tiempos (esperas a condición en lugar de `time.sleep` fijos):**  
+   Los scripts per-evento (`4`, `5`, `6`) ya no usan `time.sleep()` fijos tras cargar una página o hacer clic: esperan de forma **best-effort** con `WebDriverWait` a una condición concreta (p. ej. `.vm-stats-game`, `table.mod-econ`, `div.ovw-row`) y, si el timeout expira, continúan igualmente, de modo que un fallo puntual nunca provoca pérdida de datos. Esto **no incrementa el número de peticiones** a VLR.gg (no agrava el riesgo de bloqueo de Cloudflare) y elimina el tiempo muerto. Adicionalmente, `scrapear_enfrentamientos.py` carga la pestaña *performance* **una sola vez por partido** y la reutiliza en los dos pases (matrices y multikills), **reduciendo a la mitad sus peticiones**.
+5. **Idempotencia y Resiliencia en Ejecuciones por Lotes:**  
    La ejecución `[A]` determina la pendencia **por evento**: `carpeta_evento_completa()` compara los archivos presentes en `output_data/<evento>/` contra `archivos_esperados_evento()` (8 para eventos no-China, 4 para China) y marca como pendiente cualquier carpeta incompleta. Además, `ejecutar_script_paralelo()` omite cada script cuya salida ya exista en la carpeta del evento. Resultado: se puede cancelar y reanudar el maestro en cualquier punto, sin omitir eventos a medio terminar y sin re-scrapear lo ya completado. (El catálogo maestro global —scripts 1 y 7— sigue usando `salidas_existen()`.)
+6. **Gestión de Procesos Hijos y Prevención de Navegadores Huérfanos:**  
+   Cada script analítico abre su propio Chrome headless. Al interrumpir con `Ctrl+C`, `subprocess.run()` mata solo al hijo Python, **no** a sus descendientes (`chromedriver` y `chrome.exe`), que quedarían huérfanos; acumulados entre corridas agotan la RAM del equipo (llegó a observarse 142 procesos `chrome.exe` y ~300 MB libres de 7,4 GB). `main.py` lo evita con dos capas: (1) registra cada subproceso con `Popen` y, ante `KeyboardInterrupt`, ejecuta `matar_procesos_activos()` (`taskkill /F /T /PID`) para terminar el **árbol completo** de procesos; (2) al arrancar, `limpiar_navegadores_huerfanos()` cierra cualquier Chrome headless de Selenium remanente de corridas anteriores (en el arranque no hay scraping activo, por lo que esos procesos son necesariamente huérfanos). El grado de concurrencia se controla con la constante `MAX_PARALELOS` (por defecto 5; conviene reducirlo en equipos con poca RAM, ya que cada script abre un Chrome).
 
 ---
 
