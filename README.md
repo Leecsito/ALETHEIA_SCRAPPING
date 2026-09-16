@@ -19,7 +19,6 @@ ALETHEIA/
 │   ├── scrapear_partidos.py         # Partidos VCT (VLR.gg)
 │   ├── scrapear_vlr_corregido.py    # Mapas y rondas
 │   ├── scrapear_stats_pro.py        # Stats por lado ATK/DEF
-│   ├── scrapear_stats_pro_china.py  # Motor alternativo para eventos de China
 │   ├── scrapear_enfrentamientos.py  # Enfrentamientos y multikills
 │   └── scrapear_economia.py         # Economía por ronda y resumen
 ├── output_data/                     # Archivos Excel generados

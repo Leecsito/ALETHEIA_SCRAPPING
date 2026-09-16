@@ -43,7 +43,6 @@ ALETHEIA/
 │   ├── scrapear_partidos.py         # [Script 2] Extrae metadatos del partido, fecha, score, veto y parches
 │   ├── scrapear_vlr_corregido.py    # [Script 3] Extrae mapas, rondas, resoluciones y pick de mapa vs lado
 │   ├── scrapear_stats_pro.py        # [Script 4] Extrae estadísticas por jugador discriminadas por lado (Attack/Defense)
-│   ├── scrapear_stats_pro_china.py  # [Script 4 - China] Motor alternativo: split proporcional para eventos de China
 │   ├── scrapear_enfrentamientos.py  # [Script 5] Extrae matrices de enfrentamientos (H2H) y tabla de multikills/clutches
 │   ├── scrapear_economia.py         # [Script 6] Extrae resumen económico por equipo y economía ronda a ronda
 │   └── scrapear_jugadores.py        # [Script 7] Extrae catálogo de jugadores activos y equipo actual desde VLR.gg
@@ -86,7 +85,7 @@ scrapear_enlaces_evento.py    scrapear_equipos / scrapear_jugadores Ejecución e
            │                                │                                │
            ▼                                ▼                                ├── Script 2 (Partidos)
   output_data/                      output_data/                             ├── Script 3 (Mapas/Rondas)
-  enlaces_<evento>.txt              ├── vct_equipos.xlsx                     ├── Script 4 (Stats Pro / China)
+  enlaces_<evento>.txt              ├── vct_equipos.xlsx                                                                                                          ├── Script 4 (Stats Pro)
                                     └── vct_jugadores.xlsx                   ├── Script 5 (H2H / Multikills)
                                                                              └── Script 6 (Economía)
                                                                                      │
@@ -112,16 +111,14 @@ Al seleccionar `[A]` en `main.py`, el pipeline evalúa el estado del almacenamie
    - Lanza en paralelo los 5 scripts analíticos (`2`, `3`, `4`, `5`, `6`) usando `ThreadPoolExecutor(max_workers=5)`.
    - Inyecta la variable de entorno `ALETHEIA_TXT_FILE` al entorno de cada subproceso para indicarle la ruta exacta del `.txt` sin requerir inputs manuales por consola.
 
-### C. Selección Dinámica del Motor de Estadísticas (Script 4)
+### C. Motor de Estadísticas por Lado (Script 4)
 
-VLR.gg presenta una inconsistencia estructural en las páginas de partidos de la región **China**: los botones y spans correspondientes a los bandos individuales `mod-t` (Attack) y `mod-ct` (Defense) están vacíos en el DOM original, lo que ocasiona que el motor normal (`scrapear_stats_pro.py`) extraiga todas las estadísticas en ceros.
+Todas las regiones —incluida **China**— se procesan con un único motor, `scrapear_stats_pro.py`.
 
-`main.py` incorpora una regla heurística:
-```python
-if key == "4" and ruta_txt and "china" in os.path.basename(ruta_txt).lower():
-    archivo = "scrapear_stats_pro_china.py"
-```
-Cuando detecta la palabra `china` en el nombre del `.txt`, conmuta la ejecución a `scrapear_stats_pro_china.py`, el cual lee las estadísticas globales del mapa (`mod-both`) y realiza un **split proporcional ponderado** a partir de las rondas reales jugadas extraídas previamente por el Script 3 en `vlr_mapas.xlsx`.
+> [!NOTE]
+> Existió un motor alternativo para China (`scrapear_stats_pro_china.py`) que aplicaba un **split proporcional** de las métricas globales (`mod-both`) usando las rondas de `vlr_mapas.xlsx`. Fue **eliminado**: (1) VLR.gg ya publica los bandos `mod-t` (Attack) y `mod-ct` (Defense) directamente en el tab Overview, por lo que no se requieren cálculos proporcionales, y (2) sus selectores (`table.wf-table-inset`, `td.mod-stat`) ya no existen en el DOM actual de VLR.gg, por lo que devolvía resultados vacíos.
+>
+> En partidos donde VLR.gg no dispone del detalle por rondas (el nombre del mapa aparece sin duración, ej. `AbyssPICK-`, y `mod-both` solo trae ACS + K/D/A), los bandos `mod-t`/`mod-ct` vienen vacíos. Es una limitación del origen de datos, no del scraping.
 
 ---
 
@@ -193,20 +190,6 @@ Cuando detecta la palabra `china` en el nombre del `.txt`, conmuta la ejecución
     - Defense: `div.js-side-filter div[data-side='ct']`
   - Tras cada clic, actualiza el árbol DOM y extrae las métricas de rendimiento por jugador desde las tablas `.wf-table-inset`.
   - Genera **dos registros independientes por jugador por cada mapa** (`side = "Attack"` y `side = "Defense"`).
-- **Salida:** `output_data/<nombre_evento>/vlr_stats_players_sides.xlsx`.
-
-### [Script 4 - Alternativo] `scrapear_stats_pro_china.py` (Motor Región China)
-- **Fuente:** Páginas de partido en VLR.gg + `output_data/<nombre_evento>/vlr_mapas.xlsx`.
-- **Mecanismo:**
-  - Extrae las métricas globales del mapa desde el selector `mod-both` (pestaña ALL), disponible sin fallas en los partidos chinos.
-  - Carga el archivo generado previamente `vlr_mapas.xlsx` para conocer `score_a` y `score_b`.
-  - **Fórmula de Rondas Reales Jugadas:**
-    $$\text{atk\_played}_{\text{top}} = \text{sa\_atk} + \text{sb\_def}$$
-    $$\text{def\_played}_{\text{top}} = \text{sa\_def} + \text{sb\_atk}$$
-  - **División Proporcional de Métricas:**
-    - Métricas acumulativas enteras (`kills`, `deaths`, `assists`, `fk`, `fd`) se ponderan por la fracción de rondas disputadas en cada bando:
-      $$\text{val\_atk} = \text{round}\left(\text{total} \times \frac{\text{atk\_r}}{\text{atk\_r} + \text{def\_r}}\right),\quad \text{val\_def} = \text{total} - \text{val\_atk}$$
-    - Métricas de ratio o promedio (`rating`, `acs`, `adr`, `kast`, `hs_percent`) se mantienen iguales en ambos lados por tratarse de valores medios del mapa completo.
 - **Salida:** `output_data/<nombre_evento>/vlr_stats_players_sides.xlsx`.
 
 ### [Script 5] `scrapear_enfrentamientos.py`

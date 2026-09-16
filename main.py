@@ -73,7 +73,6 @@ SCRIPTS = {
     "4": {
         "nombre": "Estadísticas por lado ATK/DEF (VLR.gg)",
         "archivo": "scrapear_stats_pro.py",
-        "archivo_china": "scrapear_stats_pro_china.py",  # Motor alternativo para China
         "salida": ["vlr_stats_players_sides.xlsx"],
     },
     "5": {
@@ -171,22 +170,11 @@ def ejecutar_script_paralelo(key, ruta_txt=None):
     Versión para ejecución paralela: lanza el proceso y captura la salida.
     Si ruta_txt está definida, pasa ALETHEIA_TXT_FILE al subproceso para que
     el script guarde los resultados en la carpeta de ese .txt específico.
-
-    Para el script #4 (stats por lado), detecta automáticamente si el evento
-    es de China y usa scrapear_stats_pro_china.py en ese caso, ya que las
-    pestañas ATK/DEF de VLR.gg están vacías para la región China y el motor
-    normal devolvería todo en ceros.
     """
     info = SCRIPTS[key]
     nombre = info["nombre"]
 
-    # ── Selección automática de motor para stats (script 4) ─────────────────
     archivo = info["archivo"]
-    if key == "4" and ruta_txt and "china" in os.path.basename(ruta_txt).lower():
-        archivo = info.get("archivo_china", info["archivo"])
-        nombre = nombre + " [motor China]"
-        print(f"\n🇨🇳  Evento China detectado → usando motor alternativo: {archivo}")
-
     ruta = os.path.join(SCRIPTS_DIR, archivo)
 
     if not os.path.exists(ruta):
