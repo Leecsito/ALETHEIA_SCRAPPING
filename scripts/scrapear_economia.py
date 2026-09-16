@@ -2,11 +2,17 @@ import time
 import os
 import pandas as pd
 import re
+import requests
 from bs4 import BeautifulSoup
 from selenium.webdriver.common.by import By
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from driver_setup import crear_driver
+
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                  '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+}
 
 # Carpeta de salida relativa al script
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'output_data')
@@ -112,20 +118,42 @@ def obtener_mapas(soup, match_id):
     return mapas
 
 
-def generar_abbrev(nombre):
-    """Misma heurística usada en los otros scrapers para derivar una sigla
-    a partir del nombre completo (funciona bien para nombres de varias
-    palabras, ej. 'Team Liquid' -> 'tl')."""
-    tokens = re.findall(r'\d+|[a-zA-ZÀ-ÿ]+', nombre)
-    abbrev = ''
-    for token in tokens:
-        if token.isdigit():
-            abbrev += token
-        elif token.isupper():
-            abbrev += token
-        else:
-            abbrev += token[0].upper()
-    return abbrev.lower()
+def construir_siglas_reales(soup, global_team_a, global_team_b):
+    """Lee las siglas reales que VLR.gg asigna a cada equipo en este partido
+    (ej. 'krx' -> 'A', 'vit' -> 'B') desde la primera columna del bloque
+    vlr-rounds del DOM de la pestaña overview. Mismo patrón que
+    construir_siglas_reales() en scrapear_vlr_corregido.py.
+
+    Resuelve siglas no derivables del nombre con heurísticas de texto
+    (ej. 'KRX' para KIWOOM DRX, 'VIT' para Team Vitality), que antes
+    dejaban team_id vacío al no poder resolverse desde el veto.
+
+    Devuelve {sigla_lower: 'A'|'B'} o {} si no se pueden leer del DOM.
+    Solo se necesita el primer mapa disponible: las siglas son idénticas en todos.
+    """
+    for contenedor in soup.find_all('div', class_='vm-stats-game'):
+        if contenedor.get('data-game-id') in (None, 'all'):
+            continue
+        nombres = [d.get_text(strip=True)
+                   for d in contenedor.find_all('div', class_='team-name')]
+        rc = contenedor.find('div', class_='vlr-rounds')
+        if not rc:
+            continue
+        col0 = rc.find_all('div', class_='vlr-rounds-row-col')
+        if not col0:
+            continue
+        tags = [d.get_text(strip=True)
+                for d in col0[0].find_all('div', class_='team')]
+        if len(nombres) >= 2 and len(tags) >= 2:
+            mapa = {}
+            for nombre, tag in zip(nombres[:2], tags[:2]):
+                if nombre == global_team_a:
+                    mapa[tag.lower()] = 'A'
+                elif nombre == global_team_b:
+                    mapa[tag.lower()] = 'B'
+            if mapa:
+                return mapa
+    return {}
 
 
 def obtener_equipos_header(soup):
@@ -153,40 +181,19 @@ def obtener_equipos_header(soup):
     return global_team_a, global_team_b, team_a_id, team_b_id
 
 
-def construir_tag_map(soup, global_team_a, global_team_b, team_a_id, team_b_id):
-    """Resuelve las 2 siglas reales (ej. 'TL', 'GX') que usa la pestaña de
-    economía, a partir del texto de veto (match-header-note), que sigue
-    presente sin importar la pestaña. Como solo hay 2 equipos por partido,
-    si la heurística resuelve una sigla, la otra se asigna por descarte.
-    Devuelve {sigla: (team_id, team_name)}."""
-    note = soup.find('div', class_='match-header-note')
-    if not note:
-        return {}
-
-    texto = note.get_text(' ', strip=True)
-    siglas = re.findall(r'\b([A-Z][A-Z0-9]{1,4})\b(?=\s+(?:ban|pick))', texto)
-    siglas_unicas = list(dict.fromkeys(siglas))
-    if len(siglas_unicas) != 2:
-        return {}
-
-    resueltas = {}
-    for tag in siglas_unicas:
-        tag_low = tag.lower()
-        if global_team_a.lower().startswith(tag_low) or generar_abbrev(global_team_a) == tag_low:
-            resueltas[tag] = (team_a_id, global_team_a)
-        elif global_team_b.lower().startswith(tag_low) or generar_abbrev(global_team_b) == tag_low:
-            resueltas[tag] = (team_b_id, global_team_b)
-
-    if len(resueltas) == 1:
-        tag_resuelta = next(iter(resueltas))
-        equipo_resuelto = resueltas[tag_resuelta][1]
-        tag_restante = [t for t in siglas_unicas if t != tag_resuelta][0]
-        if equipo_resuelto == global_team_a:
-            resueltas[tag_restante] = (team_b_id, global_team_b)
+def construir_tag_map(soup_overview, global_team_a, global_team_b, team_a_id, team_b_id):
+    """Resuelve las siglas reales (ej. 'KRX', 'VIT') que usa la pestaña de
+    economía, leyéndolas del DOM de la pestaña overview (bloque vlr-rounds),
+    que sí está disponible vía requests. Devuelve
+    {sigla_lower: (team_id, team_name)} o {} si no se pueden leer."""
+    siglas = construir_siglas_reales(soup_overview, global_team_a, global_team_b)
+    tag_map = {}
+    for tag, lado in siglas.items():
+        if lado == 'A':
+            tag_map[tag] = (team_a_id, global_team_a)
         else:
-            resueltas[tag_restante] = (team_a_id, global_team_a)
-
-    return resueltas
+            tag_map[tag] = (team_b_id, global_team_b)
+    return tag_map
 
 def obtener_economia(driver, url):
     """
@@ -217,7 +224,19 @@ def obtener_economia(driver, url):
     print(f"  🗺️  Mapas: {[m['map_name'] for m in mapas]}")
 
     global_team_a, global_team_b, team_a_id, team_b_id = obtener_equipos_header(soup)
-    tag_map = construir_tag_map(soup, global_team_a, global_team_b, team_a_id, team_b_id)
+
+    # Las siglas de la pestaña economy no siempre se derivan del nombre del
+    # equipo (ej. 'KRX' para KIWOOM DRX). Se leen del DOM de la pestaña
+    # overview (bloque vlr-rounds), disponible vía requests.
+    tag_map = {}
+    try:
+        resp = requests.get(base_url, headers=HEADERS, timeout=10)
+        if resp.status_code == 200:
+            soup_overview = BeautifulSoup(resp.text, 'html.parser')
+            tag_map = construir_tag_map(soup_overview, global_team_a,
+                                        global_team_b, team_a_id, team_b_id)
+    except Exception as e:
+        print(f"  ⚠️  Error obteniendo overview para siglas: {e}")
     if len(tag_map) < 2:
         print(f"  ⚠️  No se pudieron resolver las siglas del partido "
               f"(tags vistos: {list(tag_map.keys())}); team_id quedará vacío")
@@ -275,7 +294,7 @@ def obtener_economia(driver, url):
                 continue
             equipo = team_div.get_text(strip=True)
             equipos_orden.append(equipo)
-            team_id_val, _ = tag_map.get(equipo, (None, None))
+            team_id_val, _ = tag_map.get(equipo.lower(), (None, None))
 
             def get_sq_text(celda):
                 sq = celda.find('div', class_='stats-sq')
@@ -343,8 +362,8 @@ def obtener_economia(driver, url):
         teams_divs  = primera_col.find_all('div', class_='team') if primera_col else []
         team_top = teams_divs[0].get_text(strip=True) if len(teams_divs) > 0 else "TeamA"
         team_bot = teams_divs[1].get_text(strip=True) if len(teams_divs) > 1 else "TeamB"
-        team_top_id, _ = tag_map.get(team_top, (None, None))
-        team_bot_id, _ = tag_map.get(team_bot, (None, None))
+        team_top_id, _ = tag_map.get(team_top.lower(), (None, None))
+        team_bot_id, _ = tag_map.get(team_bot.lower(), (None, None))
 
         columnas = tabla_rondas.find_all('td')[1:]  # Saltar primera col (labels)
 

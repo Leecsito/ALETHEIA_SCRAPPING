@@ -169,7 +169,8 @@ Cuando detecta la palabra `china` en el nombre del `.txt`, conmuta la ejecución
 - **Mecanismo y Heurísticas:**
   - Extrae `match_id`, nombre del torneo, fase, fecha local/UTC y versión del parche de Valorant (`Patch XX.XX`).
   - **Decodificador de Veto y Selección de Mapas:** Parsea el contenido de `div.match-header-note` (donde se registran picks, bans y deciders).
-  - **Mapeo de Siglas (`ALIAS_MAP`):** Resuelve abreviaturas competitivas de equipos en las 4 regiones (ej: `SEN` → Sentinels, `100T` → 100 Thieves, `EDG` → EDward Gaming, `PRX` → Paper Rex) para atribuir inequívocamente qué equipo ejecutó cada ban o pick.
+  - **Resolución de Siglas desde el DOM (`construir_siglas_reales`):** Atribuye cada acción del veto al equipo correcto leyendo las siglas reales que VLR.gg asigna a cada escuadra directamente desde la primera columna del bloque `vlr-rounds` (elementos `div.team` en `vlr-rounds-row-col` col 0), cruzadas con los `div.team-name` del scoreboard. Produce un mapa `{sigla_lower → 'A'|'B'}` (ej: `{'t1': 'A', 'krx': 'B'}`). Mismo patrón que `scrapear_vlr_corregido.py` y `construir_mapa_tags()` en `scrapear_stats_pro.py`. El bloque `vlr-rounds` está presente en el HTML crudo de `requests`, por lo que no requiere Selenium.
+  - **Sin atribución a ciegas:** Si una sigla del veto no está en el mapa del DOM, la acción se descarta con advertencia en consola. Anteriormente toda sigla no reconocida caía al equipo A por defecto, lo que corrompía picks/bans (bug detectado en Masters Bangkok 2025, match 449004: la sigla `KRX` de KIWOOM DRX no era derivable del nombre ni estaba en el antiguo `ALIAS_MAP`, y sus 2 picks + 2 bans se asignaron a T1).
 - **Salida:** `output_data/<nombre_evento>/vct_partidos.xlsx`.
 
 ### [Script 3] `scrapear_vlr_corregido.py`
@@ -223,6 +224,7 @@ Cuando detecta la palabra `china` en el nombre del `.txt`, conmuta la ejecución
 ### [Script 6] `scrapear_economia.py`
 - **Fuente:** Tab de Economía en VLR.gg (`?tab=economy`).
 - **Mecanismo y Corrección de Regla de Negocio:**
+  - **Resolución de Siglas desde el DOM (`construir_tag_map` + `construir_siglas_reales`):** Las siglas que usa la pestaña de economía (ej. `KRX`, `VIT`) no siempre se derivan del nombre del equipo con heurísticas de texto. El script realiza una petición `requests` adicional a la pestaña **overview** del partido (cuyo HTML crudo sí contiene el bloque `vlr-rounds`, ausente en `?tab=economy`) y lee las siglas reales asignadas a cada equipo, produciendo `{sigla_lower → (team_id, team_name)}`. Anteriormente se resolvían desde el texto del veto con `startswith`/`generar_abbrev` + asignación por descarte, lo que dejaba `team_id` vacío cuando ambas siglas fallaban (bug detectado en Masters Bangkok 2025, match 449000: `KRX` para KIWOOM DRX y `VIT` para Team Vitality quedaron sin resolver en los 3 mapas).
   - Extrae las dos tablas económicas por cada mapa:
     1. **Tabla Resumen por Equipo:** Desglosa `pistol_won`, `eco`, `semi_eco`, `semi_buy` y `full_buy`.
        > [!IMPORTANT]
@@ -440,9 +442,7 @@ Economía transaccional ronda por ronda.
 ## 6. Particularidades, Heurísticas y Reglas de Negocio
 
 1. **Desambiguación de Siglas y Nombres de Equipo:**  
-   En los vetos (`match-header-note`), los equipos suelen expresarse por siglas no estandarizadas (`C9`, `100T`, `SEN`, `FPX`, `EDG`). El sistema utiliza una doble estrategia:
-   - Coincidencia con diccionario explícito `ALIAS_MAP`.
-   - Generación algorítmica de acrónimos (`generar_abbrev`) combinando letras mayúsculas y dígitos para nombres complejos (ej. `100 Thieves` $\rightarrow$ `100t`).
+   En los vetos (`match-header-note`) y en las tablas de economía, los equipos se expresan por siglas no estandarizadas (`C9`, `100T`, `SEN`, `KRX`, `VIT`) que no siempre son derivables del nombre completo (ej. VLR.gg usa `KRX` para KIWOOM DRX por motivos de sponsor). Los scripts 2, 3 y 6 resuelven las siglas **leyéndolas directamente del DOM** (primera columna del bloque `vlr-rounds`, cruzada con los `div.team-name` del scoreboard) mediante variantes de `construir_siglas_reales()`, en lugar de heurísticas de texto frágiles. Si una sigla no puede resolverse, la acción se descarta con advertencia en consola: el sistema nunca atribuye a ciegas (históricamente, toda sigla no reconocida caía al equipo A por defecto).
 2. **Corrección de Pistolas en la Economía de VLR.gg:**  
    VLR.gg agrupa las rondas de pistolas (rondas 1 y 13) dentro del contador de compras `eco`. El script `scrapear_economia.py` resta de forma obligatoria 1 ronda jugada y la victoria correspondiente de la categoría Eco, evitando sesgar los análisis tácticos con rondas de compra forzada obligatoria.
 3. **Manejo de Tiempos y Esperas Dinámicas en Selenium:**  

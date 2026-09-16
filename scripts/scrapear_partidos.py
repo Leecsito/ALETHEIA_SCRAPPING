@@ -24,16 +24,8 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 # CARGA DE URLs DESDE ARCHIVO .txt  +  CARPETA DE SALIDA DINÁMICA
 # ---------------------------------------------------------------------------
 def cargar_urls_desde_txt():
-    """
-    Lee las URLs de partidos desde un archivo .txt.
-    - Si la variable de entorno ALETHEIA_TXT_FILE está definida (llamada desde main.py),
-      usa ese archivo directamente.
-    - Si no, busca en output_data/; si hay varios pide al usuario que elija uno.
-    Siempre guarda en la subcarpeta derivada del nombre del .txt elegido.
-    """
     import glob
 
-    # Prioridad 1: archivo especificado por main.py via variable de entorno
     txt_forzado = os.environ.get("ALETHEIA_TXT_FILE")
     if txt_forzado:
         ruta_txt = txt_forzado
@@ -64,7 +56,6 @@ def cargar_urls_desde_txt():
         urls = [linea.strip() for linea in f if linea.strip()]
     print(f"   -> {len(urls)} URLs cargadas.")
 
-    # Carpeta de salida siempre derivada del .txt elegido
     nombre_base = os.path.splitext(os.path.basename(ruta_txt))[0]
     if nombre_base.startswith("enlaces_"):
         nombre_base = nombre_base[len("enlaces_"):]
@@ -75,30 +66,42 @@ def cargar_urls_desde_txt():
 
 URLS_PARTIDOS, OUTPUT_DIR = cargar_urls_desde_txt()
 
-# Alias de equipos para parsear picks/bans
-ALIAS_MAP = {
-    # AMERICAS
-    "SEN": "Sentinels",     "EG": "Evil Geniuses",  "C9": "Cloud9",
-    "100T": "100 Thieves",  "MIBR": "MIBR",          "NRG": "NRG",
-    "LOUD": "LOUD",         "LEV": "Leviatán",        "KRÜ": "KRÜ Esports",
-    "G2": "G2 Esports",     "FUR": "FURIA",           "ENV": "Envy",
-    # EMEA
-    "M8": "Gentle Mates",   "FNC": "Fnatic",          "NAVI": "Natus Vincere",
-    "TL": "Team Liquid",    "VIT": "Team Vitality",   "KC": "Karmine Corp",
-    "TH": "Team Heretics",  "BBL": "BBL Esports",     "FUT": "FUT Esports",
-    "KOI": "KOI",           "GX": "GiantX",
-    # CHINA
-    "EDG": "EDward Gaming", "FPX": "FunPlus Phoenix", "BLG": "Bilibili Gaming",
-    "JDG": "JD Gaming",     "TE": "Trace Esports",    "AG": "All Gamers",
-    "XLG": "Xi Lai Gaming", "WOL": "Wolves Esports",  "TYL": "TYLOO",
-    "DRG": "Dragon Ranger Gaming",                    "NOVA": "Nova Esports",
-    # PACIFIC
-    "PRX": "Paper Rex",     "DRX": "DRX",             "T1": "T1",
-    "ZETA": "ZETA DIVISION","GEN": "Gen.G",            "RRQ": "Rex Regum Qeon",
-    "DFM": "DetonatioN FocusMe",                      "TLN": "Talon Esports",
-    "TS": "Team Secret",    "GE": "Global Esports",   "BLD": "Bleed Esports",
-}
+def construir_siglas_reales(soup, global_team_a, global_team_b):
+    """Lee las siglas reales que VLR.gg asigna a cada equipo en este partido
+    (ej. 't1' -> 'A', 'krx' -> 'B') desde la primera columna del bloque
+    vlr-rounds del DOM. Mismo patrón que construir_siglas_reales() en
+    scrapear_vlr_corregido.py.
 
+    Resuelve siglas no derivables del nombre con heurísticas de texto
+    (ej. 'KRX' para KIWOOM DRX), que antes se atribuían al equipo A por
+    defecto corrompiendo picks/bans.
+
+    Devuelve {sigla_lower: 'A'|'B'} o {} si no se pueden leer del DOM.
+    Solo se necesita el primer mapa disponible: las siglas son idénticas en todos.
+    """
+    for contenedor in soup.find_all('div', class_='vm-stats-game'):
+        if contenedor.get('data-game-id') in (None, 'all'):
+            continue
+        nombres = [d.get_text(strip=True)
+                   for d in contenedor.find_all('div', class_='team-name')]
+        rc = contenedor.find('div', class_='vlr-rounds')
+        if not rc:
+            continue
+        col0 = rc.find_all('div', class_='vlr-rounds-row-col')
+        if not col0:
+            continue
+        tags = [d.get_text(strip=True)
+                for d in col0[0].find_all('div', class_='team')]
+        if len(nombres) >= 2 and len(tags) >= 2:
+            mapa = {}
+            for nombre, tag in zip(nombres[:2], tags[:2]):
+                if nombre == global_team_a:
+                    mapa[tag.lower()] = 'A'
+                elif nombre == global_team_b:
+                    mapa[tag.lower()] = 'B'
+            if mapa:
+                return mapa
+    return {}
 
 # ---------------------------------------------------------------------------
 # FUNCIÓN: EXTRAER DATOS DE UN PARTIDO
@@ -149,21 +152,40 @@ def obtener_partido(url):
             if patch_match:
                 data['patch'] = patch_match.group(0)
 
-        # Equipos y score
-        team_divs  = soup.select('div.match-header-vs .wf-title-med')
-        score_spans = soup.select('div.match-header-vs-score .js-spoiler span')
-
-        if len(team_divs) >= 2 and len(score_spans) >= 3:
+        # Equipos e IDs
+        team_links = soup.select('div.match-header-vs a.match-header-link')
+        team_divs = soup.select('div.match-header-vs .wf-title-med')
+        
+        t1_name = t2_name = "N/A"
+        t1_id = t2_id = "N/A"
+        
+        if len(team_divs) >= 2:
             t1_name = team_divs[0].get_text(strip=True)
             t2_name = team_divs[1].get_text(strip=True)
-            s1 = score_spans[0].get_text(strip=True)
-            s2 = score_spans[2].get_text(strip=True)
-        else:
-            t1_name = t2_name = "N/A"
-            s1 = s2 = "0"
+            
+        if len(team_links) >= 2:
+            href_a = team_links[0].get('href', '')
+            href_b = team_links[1].get('href', '')
+            
+            id_a_search = re.search(r'team/(\d+)', href_a)
+            id_b_search = re.search(r'team/(\d+)', href_b)
+            
+            t1_id = id_a_search.group(1) if id_a_search else "N/A"
+            t2_id = id_b_search.group(1) if id_b_search else "N/A"
+
+        # Score
+        score_container = soup.select_one('div.match-header-vs-score .sp-hide') or soup.select_one('div.match-header-vs-score .js-spoiler')
+        s1 = s2 = "0"
+        if score_container:
+            spans = score_container.find_all('span')
+            if len(spans) >= 3:
+                s1 = spans[0].get_text(strip=True)
+                s2 = spans[2].get_text(strip=True)
 
         data['equipo_a'] = t1_name
+        data['equipo_a_id'] = t1_id
         data['equipo_b'] = t2_name
+        data['equipo_b_id'] = t2_id
         data['score']    = f"{s1}-{s2}"
 
         # Picks, bans y decider
@@ -175,34 +197,47 @@ def obtener_partido(url):
         deciders = []
 
         if note_text:
+            # Resolución de siglas del veto directamente desde el DOM
+            # (vlr-rounds). Inmune a siglas no derivables del nombre,
+            # ej. 'KRX' para KIWOOM DRX.
+            siglas_map = construir_siglas_reales(soup, t1_name, t2_name)
+            if not siglas_map:
+                print("  ⚠️  No se pudieron leer las siglas del DOM; "
+                      "picks/bans quedarán vacíos")
+
             clean_text = note_text.replace("Bo3", "").replace("Bo5", "").strip()
             acciones = [x.strip() for x in clean_text.split(';') if x.strip()]
 
             for accion in acciones:
                 accion_lower = accion.lower()
 
-                if "remains" in accion_lower:
-                    deciders.append(accion_lower.replace("remains", "").strip().title())
+                if "remains" in accion_lower or "left over" in accion_lower:
+                    mapa = accion.split(' ')[0].title()
+                    deciders.append(mapa)
                     continue
 
-                partes    = accion.split(' ')
-                mapa      = partes[-1]
-                actor_tag = partes[0].upper()
+                partes = accion.split(' ')
+                if len(partes) >= 3:
+                    actor_tag = partes[0].lower()
+                    accion_type = partes[1].lower()
+                    mapa = " ".join(partes[2:]).title()
 
-                es_equipo_a = False
-                root_name_a = t1_name.split(' ')[0].lower()
+                    lado = siglas_map.get(actor_tag)
+                    if lado is None:
+                        # No atribuir a ciegas: antes toda sigla no reconocida
+                        # caía al equipo A por defecto (bug KRX -> T1).
+                        print(f"  ⚠️  Sigla de veto no reconocida: "
+                              f"'{partes[0]}' ({accion})")
+                        continue
 
-                if t1_name.lower() in accion_lower or root_name_a in accion_lower:
-                    es_equipo_a = True
-                elif actor_tag in ALIAS_MAP:
-                    nombre_alias = ALIAS_MAP[actor_tag].lower()
-                    if nombre_alias in t1_name.lower():
-                        es_equipo_a = True
+                    es_equipo_a = (lado == 'A')
 
-                if "ban" in accion_lower:
-                    (bans_a if es_equipo_a else bans_b).append(mapa)
-                elif "pick" in accion_lower:
-                    (picks_a if es_equipo_a else picks_b).append(mapa)
+                    if "ban" in accion_type:
+                        if es_equipo_a: bans_a.append(mapa)
+                        else: bans_b.append(mapa)
+                    elif "pick" in accion_type:
+                        if es_equipo_a: picks_a.append(mapa)
+                        else: picks_b.append(mapa)
 
         data['pick_a']   = ", ".join(picks_a)
         data['pick_b']   = ", ".join(picks_b)
@@ -216,12 +251,10 @@ def obtener_partido(url):
         print(f"  ❌ Error interno procesando {url}: {e}")
         return None
 
-
 # ---------------------------------------------------------------------------
 # EJECUCIÓN PRINCIPAL
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    # Eliminar URLs duplicadas manteniendo orden
     urls_unicas = list(dict.fromkeys(URLS_PARTIDOS))
     print(f"\n🚀 Iniciando extracción de {len(urls_unicas)} partidos...\n")
 
@@ -238,7 +271,7 @@ if __name__ == "__main__":
     else:
         columnas = [
             'match_id', 'torneo', 'fase', 'fecha',
-            'equipo_a', 'equipo_b', 'score',
+            'equipo_a', 'equipo_a_id', 'equipo_b', 'equipo_b_id', 'score',
             'pick_a', 'pick_b', 'ban_a', 'ban_b', 'decider', 'patch'
         ]
 
@@ -253,7 +286,6 @@ if __name__ == "__main__":
         print("\n✅ DATOS OBTENIDOS (df_partidos):")
         print(df_partidos.to_string(index=False))
 
-        # Guardar Excel
         ruta_excel = os.path.join(OUTPUT_DIR, "vct_partidos.xlsx")
         df_partidos.to_excel(ruta_excel, index=False, sheet_name="Partidos")
         print(f"\n💾 Excel guardado en: {ruta_excel}")

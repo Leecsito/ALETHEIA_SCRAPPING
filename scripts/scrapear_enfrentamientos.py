@@ -3,6 +3,9 @@ import os
 import pandas as pd
 import re
 from bs4 import BeautifulSoup
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from driver_setup import crear_driver
@@ -67,13 +70,15 @@ def obtener_mapas_jugados(driver, match_id):
     """
     soup = BeautifulSoup(driver.page_source, 'html.parser')
     
-    # Buscar los botones de mapas
-    map_buttons = soup.find_all('div', class_='vm-stats-gamesnav-item')
+    # [CORRECCIÓN APLICADA]: En VLR.gg los botones son etiquetas <a>, no <div>
+    map_buttons = soup.find_all('a', class_='vm-stats-gamesnav-item')
     
     mapas = []
     for button in map_buttons:
         game_id = button.get('data-game-id')
-        if game_id and game_id != 'all':
+        is_disabled = button.get('data-disabled') # Ignorar mapas cancelados (ej: en un 3-0)
+        
+        if game_id and game_id != 'all' and is_disabled != '1':
             # Extraer nombre del mapa
             map_text = button.get_text(strip=True)
             # El texto puede ser algo como "1Bind" o "2Abyss"
@@ -141,9 +146,10 @@ def obtener_enfrentamientos_por_mapa(driver, url):
         
         # Hacer clic en el botón del mapa
         try:
+            # [CORRECCIÓN APLICADA]: Selector CSS actualizado a 'a.vm-stats...'
             map_button = driver.find_element(
                 By.CSS_SELECTOR,
-                f"div.vm-stats-gamesnav-item[data-game-id='{game_id}']"
+                f"a.vm-stats-gamesnav-item[data-game-id='{game_id}']"
             )
             driver.execute_script("arguments[0].click();", map_button)
             time.sleep(2)
@@ -317,9 +323,10 @@ def obtener_multikills_por_mapa(driver, url):
         
         # Hacer clic en el botón del mapa
         try:
+            # [CORRECCIÓN APLICADA]: Selector CSS actualizado a 'a.vm-stats...'
             map_button = driver.find_element(
                 By.CSS_SELECTOR,
-                f"div.vm-stats-gamesnav-item[data-game-id='{game_id}']"
+                f"a.vm-stats-gamesnav-item[data-game-id='{game_id}']"
             )
             driver.execute_script("arguments[0].click();", map_button)
             time.sleep(2)
