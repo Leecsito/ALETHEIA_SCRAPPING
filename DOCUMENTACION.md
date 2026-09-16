@@ -106,10 +106,12 @@ Al seleccionar `[A]` en `main.py`, el pipeline evalúa el estado del almacenamie
    - Ejecuta `scrapear_equipos.py` y `scrapear_jugadores.py`.
    - Si `vct_equipos.xlsx` o `vct_jugadores.xlsx` ya existen, la función `salidas_existen()` **omite** el script correspondiente automáticamente para ahorrar tiempo de cómputo.
 3. **Paso 3 — Scraping Concurrente por Lotes de Eventos:**
-   - Detecta qué archivos `.txt` en `output_data/` aún **no tienen su subcarpeta correspondiente**.
-   - Por cada evento pendiente, genera la subcarpeta `output_data/<nombre_evento>/`.
-   - Lanza en paralelo los 5 scripts analíticos (`2`, `3`, `4`, `5`, `6`) usando `ThreadPoolExecutor(max_workers=5)`.
+   - Recorre los `enlaces_*.txt` de `output_data/` y marca como **pendiente** a todo evento cuya carpeta `output_data/<nombre_evento>/` no exista o **no contenga la totalidad de sus archivos de salida** (evento interrumpido a medias). La comprobación (`carpeta_evento_completa()`) es **por evento**, nunca global.
+   - Por cada evento pendiente, genera/asegura la subcarpeta `output_data/<nombre_evento>/`.
+   - Lanza en paralelo los 5 scripts analíticos (`2`, `3`, `4`, `5`, `6`) usando `ThreadPoolExecutor(max_workers=5)`. Cada script se omite individualmente si su salida ya existe en la carpeta de ese evento, de modo que un evento incompleto **solo re-ejecuta lo que falta**.
    - Inyecta la variable de entorno `ALETHEIA_TXT_FILE` al entorno de cada subproceso para indicarle la ruta exacta del `.txt` sin requerir inputs manuales por consola.
+   - **Excepción China:** VLR.gg no publica enfrentamientos (script 5) ni economía (script 6) para esa región. La carpeta de un evento de China se considera completa con solo 4 archivos (`vct_partidos`, `vlr_mapas`, `vlr_rondas`, `vlr_stats_players_sides`); los eventos no-China exigen los 8.
+   - **Retroalimentación de progreso:** como la salida de cada subproceso se captura y solo se imprime al finalizar, `main.py` emite un **latido cada 20 s** con el tiempo transcurrido y los scripts aún en ejecución. Antes de lanzar el lote también informa qué scripts se van a ejecutar realmente (el script 5 de enfrentamientos es el más lento: recorre cada mapa y 3 filtros de matriz con esperas de Selenium).
 
 ### C. Motor de Estadísticas por Lado (Script 4)
 
@@ -431,7 +433,7 @@ Economía transaccional ronda por ronda.
 3. **Manejo de Tiempos y Esperas Dinámicas en Selenium:**  
    Dado que las tablas de estadísticas avanzadas y matrices se inyectan en el DOM cliente mediante eventos JavaScript, los scripts emplean `WebDriverWait` en conjunción con ejecución de clicks nativos con script (`driver.execute_script("arguments[0].click();", elemento)`), garantizando que los elementos no queden tapados por headers flotantes o banners de VLR.gg.
 4. **Idempotencia y Resiliencia en Ejecuciones por Lotes:**  
-   El verificador `salidas_existen()` examina tanto la raíz de `output_data/` como sus subdirectorios con patrones glob (`output_data/*/archivo.xlsx`). Esto permite cancelar o reanudar el script maestro en cualquier momento sin riesgo de sobrescribir eventos concluidos ni duplicar solicitudes HTTP.
+   La ejecución `[A]` determina la pendencia **por evento**: `carpeta_evento_completa()` compara los archivos presentes en `output_data/<evento>/` contra `archivos_esperados_evento()` (8 para eventos no-China, 4 para China) y marca como pendiente cualquier carpeta incompleta. Además, `ejecutar_script_paralelo()` omite cada script cuya salida ya exista en la carpeta del evento. Resultado: se puede cancelar y reanudar el maestro en cualquier punto, sin omitir eventos a medio terminar y sin re-scrapear lo ya completado. (El catálogo maestro global —scripts 1 y 7— sigue usando `salidas_existen()`.)
 
 ---
 

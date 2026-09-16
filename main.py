@@ -6,7 +6,8 @@ Ejecuta los scripts de scraping de datos competitivos de Valorant (VCT 2026).
 import subprocess
 import sys
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -98,6 +99,33 @@ SCRIPTS_PARALELOS = ["2", "3", "4", "5", "6"]
 SCRIPTS_SECUENCIALES = ["0", "1", "7"]
 
 
+def archivos_esperados_evento(nombre_evento):
+    """Archivos de salida que debe contener la carpeta de un evento.
+
+    Se derivan de los scripts analíticos 2, 3, 4, 5 y 6 (8 archivos en total).
+    Excepción China: VLR.gg no publica enfrentamientos (script 5) ni economía
+    (script 6) para esa región, por lo que solo se le exigen los scripts 2, 3
+    y 4 (4 archivos).
+    """
+    keys = ["2", "3", "4"] if "china" in nombre_evento.lower() else ["2", "3", "4", "5", "6"]
+    archivos = []
+    for k in keys:
+        archivos.extend(SCRIPTS[k]["salida"])
+    return archivos
+
+
+def carpeta_evento_completa(nombre_evento, carpeta):
+    """Devuelve (completa, faltantes) para la carpeta de un evento.
+
+    `completa` es True solo si TODOS los archivos esperados existen dentro de
+    esa carpeta concreta (no en cualquier evento). Así se detectan eventos
+    interrumpidos a medias y se reanudan en la siguiente ejecución.
+    """
+    faltantes = [f for f in archivos_esperados_evento(nombre_evento)
+                 if not os.path.exists(os.path.join(carpeta, f))]
+    return (not faltantes), faltantes
+
+
 def mostrar_menu():
     print("\n" + "=" * 60)
     print("  ⚔️  ALETHEIA — Datos Competitivos Valorant VCT 2026")
@@ -165,14 +193,24 @@ def ejecutar_script(key, omitir_si_existe=False):
     return resultado.returncode == 0
 
 
-def ejecutar_script_paralelo(key, ruta_txt=None):
+def ejecutar_script_paralelo(key, ruta_txt=None, carpeta_evento=None):
     """
     Versión para ejecución paralela: lanza el proceso y captura la salida.
     Si ruta_txt está definida, pasa ALETHEIA_TXT_FILE al subproceso para que
     el script guarde los resultados en la carpeta de ese .txt específico.
+
+    Si carpeta_evento se indica y ya contiene TODOS los archivos de salida de
+    este script, se omite: así un evento incompleto se reanuda ejecutando
+    únicamente los scripts que faltan.
     """
     info = SCRIPTS[key]
     nombre = info["nombre"]
+
+    if carpeta_evento and info["salida"]:
+        faltan = [f for f in info["salida"]
+                  if not os.path.exists(os.path.join(carpeta_evento, f))]
+        if not faltan:
+            return True, f"\n⏭️  [{nombre}] omitido — ya existe en {os.path.basename(carpeta_evento)}"
 
     archivo = info["archivo"]
     ruta = os.path.join(SCRIPTS_DIR, archivo)
@@ -231,7 +269,7 @@ def ejecutar_todos():
     print("  PASO 1/3 — Verificando archivos de enlaces")
     print("=" * 60)
 
-    archivos_txt = glob.glob(os.path.join(OUTPUT_DIR, "*.txt"))
+    archivos_txt = glob.glob(os.path.join(OUTPUT_DIR, "enlaces_*.txt"))
 
     if archivos_txt:
         print(f"\n📂 Se encontraron {len(archivos_txt)} archivo(s) de enlaces:")
@@ -260,8 +298,9 @@ def ejecutar_todos():
     print("  Un lote de 5 scripts por cada evento pendiente")
     print("=" * 60)
 
-    # Determinar qué .txt NO tienen carpeta de salida todavía
-    archivos_txt = glob.glob(os.path.join(OUTPUT_DIR, "*.txt"))
+    # Determinar qué eventos están pendientes: sin carpeta de salida, o con
+    # una carpeta a la que le faltan archivos (scraping interrumpido a medias).
+    archivos_txt = glob.glob(os.path.join(OUTPUT_DIR, "enlaces_*.txt"))
     txt_pendientes_rutas = []
     txt_ya_hechos = []
 
@@ -270,13 +309,23 @@ def ejecutar_todos():
         if nombre_base.startswith("enlaces_"):
             nombre_base = nombre_base[len("enlaces_"):]
         carpeta_esperada = os.path.join(OUTPUT_DIR, nombre_base)
-        if os.path.isdir(carpeta_esperada):
+
+        if not os.path.isdir(carpeta_esperada):
+            txt_pendientes_rutas.append(ruta_txt)  # nunca se procesó
+            continue
+
+        completa, faltantes = carpeta_evento_completa(nombre_base, carpeta_esperada)
+        if completa:
             txt_ya_hechos.append(os.path.basename(ruta_txt))
         else:
-            txt_pendientes_rutas.append(ruta_txt)  # guardamos la ruta completa
+            print(f"\n⚠️  {nombre_base}: carpeta incompleta "
+                  f"({len(faltantes)} archivo(s) faltante(s)) → se reanudará")
+            for f in faltantes:
+                print(f"      • {f}")
+            txt_pendientes_rutas.append(ruta_txt)
 
     if txt_ya_hechos:
-        print(f"\nYa procesados (carpeta existe):")
+        print(f"\nYa procesados (carpeta completa):")
         for f in txt_ya_hechos:
             print(f"   OK {f}")
 
@@ -299,19 +348,49 @@ def ejecutar_todos():
                 nombre_evento = nombre_evento[len("enlaces_"):]
 
             print(f"\n--- Evento: {nombre_evento} ---")
-            print(f"    Lanzando 5 scripts en paralelo...")
+
+            carpeta_evento = os.path.join(OUTPUT_DIR, nombre_evento)
+            os.makedirs(carpeta_evento, exist_ok=True)
+
+            # Informar qué scripts se ejecutarán realmente (los demás se omiten)
+            por_ejecutar = []
+            for key in SCRIPTS_PARALELOS:
+                info = SCRIPTS[key]
+                falta = [f for f in info["salida"]
+                         if not os.path.exists(os.path.join(carpeta_evento, f))]
+                if falta:
+                    por_ejecutar.append(info["nombre"])
+
+            if por_ejecutar:
+                print(f"    Se ejecutarán: {', '.join(por_ejecutar)}")
+                print("    ⏳ Puede tardar varios minutos (Selenium recorre cada mapa y filtro).")
+                print("       El detalle de cada script aparecerá al terminar; latido cada 20s.")
+            else:
+                print("    Nada que ejecutar: la carpeta ya tiene todos sus archivos.")
 
             futures = {}
             with ThreadPoolExecutor(max_workers=5) as executor:
                 for key in SCRIPTS_PARALELOS:
-                    future = executor.submit(ejecutar_script_paralelo, key, ruta_txt)
+                    future = executor.submit(ejecutar_script_paralelo, key, ruta_txt, carpeta_evento)
                     futures[future] = key
 
-                for future in as_completed(futures):
-                    exito, salida = future.result()
-                    print(salida)
-                    if exito:
-                        exitos += 1
+                pendientes = set(futures.keys())
+                inicio = time.time()
+                while pendientes:
+                    hechas, pendientes = wait(pendientes, timeout=20,
+                                              return_when=FIRST_COMPLETED)
+                    for future in hechas:
+                        exito, salida = future.result()
+                        if salida:
+                            print(salida)
+                        if exito:
+                            exitos += 1
+                    if pendientes:
+                        transcurrido = time.time() - inicio
+                        nombres = ", ".join(
+                            SCRIPTS[futures[f]]["nombre"].split(" (")[0]
+                            for f in pendientes)
+                        print(f"    ⏳ {transcurrido:4.0f}s — aún ejecutando: {nombres}")
 
     print(f"\n{'=' * 60}")
     print(f"Resultado: {exitos}/{len(SCRIPTS)} scripts completados")
