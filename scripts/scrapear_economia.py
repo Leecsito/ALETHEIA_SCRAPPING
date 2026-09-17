@@ -10,6 +10,8 @@ from selenium.webdriver.support import expected_conditions as EC
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from driver_setup import crear_driver
+from url_utils import normalizar_url
+from equipos_utils import alias_nombres_equipo
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
@@ -57,7 +59,7 @@ def cargar_enlaces_desde_txt():
                 print("   Seleccion invalida, intenta de nuevo.")
 
     with open(ruta_txt, 'r', encoding='utf-8') as f:
-        urls = [linea.strip() for linea in f if linea.strip()]
+        urls = [normalizar_url(linea) for linea in f if linea.strip()]
     print(f"   -> {len(urls)} URLs cargadas.")
 
     nombre_base = os.path.splitext(os.path.basename(ruta_txt))[0]
@@ -148,10 +150,12 @@ def construir_siglas_reales(soup, global_team_a, global_team_b):
                 for d in col0[0].find_all('div', class_='team')]
         if len(nombres) >= 2 and len(tags) >= 2:
             mapa = {}
+            alias_a = alias_nombres_equipo(global_team_a)
+            alias_b = alias_nombres_equipo(global_team_b)
             for nombre, tag in zip(nombres[:2], tags[:2]):
-                if nombre == global_team_a:
+                if nombre.lower() in alias_a:
                     mapa[tag.lower()] = 'A'
-                elif nombre == global_team_b:
+                elif nombre.lower() in alias_b:
                     mapa[tag.lower()] = 'B'
             if mapa:
                 return mapa

@@ -9,6 +9,7 @@ from selenium.webdriver.support import expected_conditions as EC
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from driver_setup import crear_driver
+from url_utils import normalizar_url
 
 # Carpeta de salida relativa al script
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'output_data')
@@ -51,7 +52,7 @@ def cargar_enlaces_desde_txt():
                 print("   Seleccion invalida, intenta de nuevo.")
 
     with open(ruta_txt, 'r', encoding='utf-8') as f:
-        urls = [linea.strip() for linea in f if linea.strip()]
+        urls = [normalizar_url(linea) for linea in f if linea.strip()]
     print(f"   -> {len(urls)} URLs cargadas.")
 
     nombre_base = os.path.splitext(os.path.basename(ruta_txt))[0]

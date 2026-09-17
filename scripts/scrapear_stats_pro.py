@@ -9,6 +9,8 @@ from selenium.webdriver.support import expected_conditions as EC
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from driver_setup import crear_driver
+from url_utils import normalizar_url
+from equipos_utils import alias_nombres_equipo
 
 # Carpeta de salida relativa al script
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'output_data')
@@ -45,7 +47,7 @@ def cargar_enlaces_desde_txt():
                 print("   Seleccion invalida, intenta de nuevo.")
 
     with open(ruta_txt, 'r', encoding='utf-8') as f:
-        urls = [linea.strip() for linea in f if linea.strip()]
+        urls = [normalizar_url(linea) for linea in f if linea.strip()]
     print(f"   -> {len(urls)} URLs cargadas.")
 
     nombre_base = os.path.splitext(os.path.basename(ruta_txt))[0]
@@ -105,10 +107,12 @@ def construir_mapa_tags(div_mapa, global_team_a, global_team_b, team_a_id, team_
     if len(nombres) < 2 or len(tags) < 2:
         return mapa_tags
 
+    alias_a = alias_nombres_equipo(global_team_a)
+    alias_b = alias_nombres_equipo(global_team_b)
     for nombre, tag in zip(nombres[:2], tags[:2]):
-        if nombre == global_team_a:
+        if nombre.lower() in alias_a:
             mapa_tags[tag] = (team_a_id, global_team_a)
-        elif nombre == global_team_b:
+        elif nombre.lower() in alias_b:
             mapa_tags[tag] = (team_b_id, global_team_b)
     return mapa_tags
 
@@ -166,8 +170,8 @@ def obtener_stats_detalladas(driver, url):
         if not map_div:
             continue
 
-        map_name_raw = map_div.get_text(strip=True)
-        map_name = map_name_raw.split()[0]
+        raw_text = map_div.get_text(" ", strip=True)
+        map_name = raw_text.split()[0].replace("PICK", "").strip()
         map_id = f"{match_id}_{map_name.lower()}"
         print(f"   📍 Mapa: {map_name} ({map_id})")
 

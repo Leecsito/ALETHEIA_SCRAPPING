@@ -350,10 +350,10 @@ def ejecutar_todos():
     print("  PASO 1/3 — Verificando archivos de enlaces")
     print("=" * 60)
 
-    archivos_txt = glob.glob(os.path.join(OUTPUT_DIR, "enlaces_*.txt"))
+    archivos_txt = glob.glob(os.path.join(OUTPUT_DIR, "*.txt"))
 
     if archivos_txt:
-        print(f"\n📂 Se encontraron {len(archivos_txt)} archivo(s) de enlaces:")
+        print(f"\n📂 Se encontraron {len(archivos_txt)} archivo(s) .txt:")
         for f in archivos_txt:
             print(f"   ✅ {os.path.basename(f)}")
         print("\n⏭️  Saltando extractor de enlaces (ya existen .txt).")
@@ -381,7 +381,7 @@ def ejecutar_todos():
 
     # Determinar qué eventos están pendientes: sin carpeta de salida, o con
     # una carpeta a la que le faltan archivos (scraping interrumpido a medias).
-    archivos_txt = glob.glob(os.path.join(OUTPUT_DIR, "enlaces_*.txt"))
+    archivos_txt = glob.glob(os.path.join(OUTPUT_DIR, "*.txt"))
     txt_pendientes_rutas = []
     txt_ya_hechos = []
 

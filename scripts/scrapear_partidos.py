@@ -10,6 +10,9 @@ import pandas as pd
 import re
 import time
 import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from url_utils import normalizar_url
 
 # --- CONFIGURACIÓN ---
 HEADERS = {
@@ -53,7 +56,7 @@ def cargar_urls_desde_txt():
                 print("   Seleccion invalida, intenta de nuevo.")
 
     with open(ruta_txt, 'r', encoding='utf-8') as f:
-        urls = [linea.strip() for linea in f if linea.strip()]
+        urls = [normalizar_url(linea) for linea in f if linea.strip()]
     print(f"   -> {len(urls)} URLs cargadas.")
 
     nombre_base = os.path.splitext(os.path.basename(ruta_txt))[0]

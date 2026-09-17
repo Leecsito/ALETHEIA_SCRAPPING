@@ -6,6 +6,8 @@ import sys
 from bs4 import BeautifulSoup
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from driver_setup import crear_driver
+from url_utils import normalizar_url
+from equipos_utils import alias_nombres_equipo
 
 # Carpeta de salida relativa al script
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'output_data')
@@ -48,7 +50,7 @@ def cargar_enlaces_desde_txt():
                 print("   Seleccion invalida, intenta de nuevo.")
 
     with open(ruta_txt, 'r', encoding='utf-8') as f:
-        urls = [linea.strip() for linea in f if linea.strip()]
+        urls = [normalizar_url(linea) for linea in f if linea.strip()]
     print(f"   -> {len(urls)} URLs cargadas.")
 
     nombre_base = os.path.splitext(os.path.basename(ruta_txt))[0]
@@ -158,6 +160,10 @@ def obtener_datos_partido(driver, url):
         global_team_b = teams_header[1].get_text(strip=True)
     else:
         global_team_a, global_team_b = "TeamA", "TeamB"
+
+    # Alias: el header puede ser 'Movistar KOI(KOI)' mientras el scoreboard usa 'KOI'
+    alias_a = alias_nombres_equipo(global_team_a)
+    alias_b = alias_nombres_equipo(global_team_b)
 
     print(f"   🎮 Equipos: {global_team_a} vs {global_team_b}")
 
@@ -286,9 +292,9 @@ def obtener_datos_partido(driver, url):
         team_bottom_name = teams_visual[1].get_text(strip=True)
 
         # --- Resolver qué team_id corresponde a la fila superior/inferior ---
-        if team_top_name == global_team_a:
+        if team_top_name.lower() in alias_a:
             team_top_id, team_bot_id = team_a_id, team_b_id
-        elif team_top_name == global_team_b:
+        elif team_top_name.lower() in alias_b:
             team_top_id, team_bot_id = team_b_id, team_a_id
         else:
             # Fallback posicional: la fila superior es el equipo A del header
@@ -370,20 +376,20 @@ def obtener_datos_partido(driver, url):
                 elif picker_team == "A":
                     # A pickeó → B eligió lado
                     # Guardamos el lado que B empezó jugando (el equipo que NO pickeó)
-                    if team_top_name == global_team_b:
+                    if team_top_name.lower() in alias_b:
                         side_chosen = side_top
                         print(f"      → {global_team_b} eligió {side_top}")
-                    elif team_bottom_name == global_team_b:
+                    elif team_bottom_name.lower() in alias_b:
                         side_chosen = side_bottom
                         print(f"      → {global_team_b} eligió {side_bottom}")
 
                 elif picker_team == "B":
                     # B pickeó → A eligió lado
                     # Guardamos el lado que A empezó jugando (el equipo que NO pickeó)
-                    if team_top_name == global_team_a:
+                    if team_top_name.lower() in alias_a:
                         side_chosen = side_top
                         print(f"      → {global_team_a} eligió {side_top}")
-                    elif team_bottom_name == global_team_a:
+                    elif team_bottom_name.lower() in alias_a:
                         side_chosen = side_bottom
                         print(f"      → {global_team_a} eligió {side_bottom}")
 

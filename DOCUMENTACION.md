@@ -38,6 +38,8 @@ ALETHEIA/
 │
 ├── scripts/                         # Módulos y motores especializados de scraping
 │   ├── driver_setup.py              # [Helper Central] Detección de versión Chrome/Chromium y creación de WebDriver
+│   ├── url_utils.py                 # [Helper] Normalización de URLs de VLR.gg (antepone https://www. si falta)
+│   ├── equipos_utils.py             # [Helper] Alias de nombres de equipo (header 'Nombre(Abrev)' vs scoreboard)
 │   ├── scrapear_enlaces_evento.py   # [Script 0] Extrae URLs de partidos desde la página del evento en VLR.gg
 │   ├── scrapear_equipos.py          # [Script 1] Extrae catálogo de equipos desde rankings VLR.gg (team_id nativo)
 │   ├── scrapear_partidos.py         # [Script 2] Extrae metadatos del partido, fecha, score, veto y parches
@@ -99,14 +101,15 @@ scrapear_enlaces_evento.py    scrapear_equipos / scrapear_jugadores Ejecución e
 Al seleccionar `[A]` en `main.py`, el pipeline evalúa el estado del almacenamiento y ejecuta las fases de forma idempotente:
 
 1. **Paso 1 — Detección de Enlaces:**
-   - Comprueba si existen archivos `enlaces_*.txt` en `output_data/`.
-   - Si existen, los reutiliza y salta al paso 2.
-   - Si no existen, lanza interactivamente `scrapear_enlaces_evento.py`.
+   - Comprueba si existe algún archivo `.txt` en `output_data/` (**sin importar su nombre**).
+   - Si existe, lo reutiliza y salta al paso 2.
+   - Si no existe, lanza interactivamente `scrapear_enlaces_evento.py`.
+   - Las URLs de cada `.txt` se normalizan con `normalizar_url()` (`scripts/url_utils.py`): `vlr.gg/123`, `www.vlr.gg/123` o `https://www.vlr.gg/123` se convierten siempre a una URL absoluta válida (evita el `MissingSchema` de `requests`).
 2. **Paso 2 — Catálogo Maestro (Prerrequisitos Secuenciales):**
    - Ejecuta `scrapear_equipos.py` y `scrapear_jugadores.py`.
    - Si `vct_equipos.xlsx` o `vct_jugadores.xlsx` ya existen, la función `salidas_existen()` **omite** el script correspondiente automáticamente para ahorrar tiempo de cómputo.
 3. **Paso 3 — Scraping Concurrente por Lotes de Eventos:**
-   - Recorre los `enlaces_*.txt` de `output_data/` y marca como **pendiente** a todo evento cuya carpeta `output_data/<nombre_evento>/` no exista o **no contenga la totalidad de sus archivos de salida** (evento interrumpido a medias). La comprobación (`carpeta_evento_completa()`) es **por evento**, nunca global.
+   - Recorre los archivos `.txt` de `output_data/` (cualquier nombre) y marca como **pendiente** a todo evento cuya carpeta `output_data/<nombre_evento>/` no exista o **no contenga la totalidad de sus archivos de salida** (evento interrumpido a medias). La comprobación (`carpeta_evento_completa()`) es **por evento**, nunca global.
    - Por cada evento pendiente, genera/asegura la subcarpeta `output_data/<nombre_evento>/`.
    - Lanza en paralelo los 5 scripts analíticos (`2`, `3`, `4`, `5`, `6`) usando `ThreadPoolExecutor(max_workers=MAX_PARALELOS)`. Cada script se omite individualmente si su salida ya existe en la carpeta de ese evento, de modo que un evento incompleto **solo re-ejecuta lo que falta**.
    - Inyecta la variable de entorno `ALETHEIA_TXT_FILE` al entorno de cada subproceso para indicarle la ruta exacta del `.txt` sin requerir inputs manuales por consola.
@@ -187,6 +190,8 @@ Todas las regiones —incluida **China**— se procesan con un único motor, `sc
 ### [Script 4] `scrapear_stats_pro.py` (Motor Estándar)
 - **Fuente:** Páginas de partido en VLR.gg (Tab Overview).
 - **Mecanismo:**
+  - **Nombre de mapa (`map_id`):** el `div.map` de VLR.gg es `Fracture<span>PICK</span>` + duración, de modo que `get_text()` sin separador produce `FracturePICK58:08`. Se aísla el nombre con separador de espacio y se limpia el sufijo `PICK`, obteniendo `map_id = {match_id}_{map_lower}` (ej. `429379_fracture`), coherente con `vlr_mapas.round_id`.
+  - **Alias de equipo:** `construir_mapa_tags()` compara el nombre del scoreboard contra `alias_nombres_equipo()` (ver §6.1) para resolver el `team_id`, soportando el formato `NombreLargo(Abrev)` del header.
   - Utiliza Selenium Headless para simular clics en los selectores de bando:
     - Attack: `div.js-side-filter div[data-side='t']`
     - Defense: `div.js-side-filter div[data-side='ct']`
@@ -429,6 +434,7 @@ Economía transaccional ronda por ronda.
 
 1. **Desambiguación de Siglas y Nombres de Equipo:**  
    En los vetos (`match-header-note`) y en las tablas de economía, los equipos se expresan por siglas no estandarizadas (`C9`, `100T`, `SEN`, `KRX`, `VIT`) que no siempre son derivables del nombre completo (ej. VLR.gg usa `KRX` para KIWOOM DRX por motivos de sponsor). Los scripts 2, 3 y 6 resuelven las siglas **leyéndolas directamente del DOM** (primera columna del bloque `vlr-rounds`, cruzada con los `div.team-name` del scoreboard) mediante variantes de `construir_siglas_reales()`, en lugar de heurísticas de texto frágiles. Si una sigla no puede resolverse, la acción se descarta con advertencia en consola: el sistema nunca atribuye a ciegas (históricamente, toda sigla no reconocida caía al equipo A por defecto).
+   - **Alias de nombre header/scoreboard (`equipos_utils.alias_nombres_equipo`):** cuando un equipo tiene patrocinador, VLR.gg muestra en el header `NombreLargo(Abrev)` (ej. `Movistar KOI(KOI)`, `JD Mall JDG Esports(JD Gaming)`), pero en el scoreboard usa solo una parte (ej. `KOI`, `JD Gaming`). Comparar por igualdad estricta hacía fallar el mapeo tag→`team_id` (dejaba `team_id` vacío en stats/economía y producía `pick_a="Unknown"`/`side_chosen` vacío en mapas). Ahora los scripts 3, 4 y 6 comparan el nombre del scoreboard contra el conjunto de alias derivado del header.
 2. **Corrección de Pistolas en la Economía de VLR.gg:**  
    VLR.gg agrupa las rondas de pistolas (rondas 1 y 13) dentro del contador de compras `eco`. El script `scrapear_economia.py` resta de forma obligatoria 1 ronda jugada y la victoria correspondiente de la categoría Eco, evitando sesgar los análisis tácticos con rondas de compra forzada obligatoria.
 3. **Manejo de Tiempos y Esperas Dinámicas en Selenium:**  
