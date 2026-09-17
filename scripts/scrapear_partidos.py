@@ -69,6 +69,18 @@ def cargar_urls_desde_txt():
 
 URLS_PARTIDOS, OUTPUT_DIR = cargar_urls_desde_txt()
 
+def _nombres_coinciden(nombre_corto, nombre_completo):
+    """
+    Compara el nombre corto que usa el HUD de rondas contra el nombre del
+    header, que a veces trae sponsor + nombre corto entre paréntesis
+    (ej. 'JD Mall JDG Esports(JD Gaming)' vs 'JD Gaming'). Un '==' exacto
+    falla en esos casos y descarta todos los picks/bans de ese equipo.
+    """
+    if nombre_corto == nombre_completo:
+        return True
+    return nombre_corto in nombre_completo or nombre_completo in nombre_corto
+
+
 def construir_siglas_reales(soup, global_team_a, global_team_b):
     """Lee las siglas reales que VLR.gg asigna a cada equipo en este partido
     (ej. 't1' -> 'A', 'krx' -> 'B') desde la primera columna del bloque
@@ -98,9 +110,9 @@ def construir_siglas_reales(soup, global_team_a, global_team_b):
         if len(nombres) >= 2 and len(tags) >= 2:
             mapa = {}
             for nombre, tag in zip(nombres[:2], tags[:2]):
-                if nombre == global_team_a:
+                if _nombres_coinciden(nombre, global_team_a):
                     mapa[tag.lower()] = 'A'
-                elif nombre == global_team_b:
+                elif _nombres_coinciden(nombre, global_team_b):
                     mapa[tag.lower()] = 'B'
             if mapa:
                 return mapa
