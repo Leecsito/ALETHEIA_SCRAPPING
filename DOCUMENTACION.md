@@ -15,7 +15,7 @@
 | **Lenguaje base** | Python 3.8+ | Núcleo del pipeline y scripts de scraping |
 | **Scraping HTTP / Estático** | `requests` (con headers de navegador) | Descarga rápida de HTML en páginas de partidos de VLR.gg |
 | **Parsing HTML / DOM** | `BeautifulSoup4` con backend `lxml` | Extracción, recorrido de selectores CSS y limpieza de texto |
-| **Scraping Dinámico / SPA** | `selenium` + `webdriver-manager` | Automatización de Chrome headless para rankings, stats, perfiles y pestañas |
+| **Scraping Dinámico / SPA** | `selenium` + `webdriver-manager` | Automatización de Chrome headless para standings/rankings, stats, perfiles y pestañas |
 | **Gestión y Compatibilidad WebDriver** | `driver_setup.py` (Selenium + WDM) | Detección automática de binario/versión Chrome/Chromium (resuelve desfase v151 vs v153) y UTF-8 en consola |
 | **Motor de Navegador** | Google Chrome / Chromium (Headless) | Renderizado de scripts cliente de VLR.gg (`--disable-blink-features=AutomationControlled`) |
 | **Manipulación de Datos (ETL)** | `pandas` | Limpieza, estructuración, transformaciones proporcionales y agregaciones |
@@ -41,13 +41,12 @@ ALETHEIA/
 │   ├── url_utils.py                 # [Helper] Normalización de URLs de VLR.gg (antepone https://www. si falta)
 │   ├── equipos_utils.py             # [Helper] Alias de nombres de equipo (header 'Nombre(Abrev)' vs scoreboard)
 │   ├── scrapear_enlaces_evento.py   # [Script 0] Extrae URLs de partidos desde la página del evento en VLR.gg
-│   ├── scrapear_equipos.py          # [Script 1] Extrae catálogo de equipos desde rankings VLR.gg (team_id nativo)
+│   ├── scrapear_equipos_jugadores_franquicia.py # [Script 1] Catálogo de equipos + roster desde standings VCT (franquiciados)
 │   ├── scrapear_partidos.py         # [Script 2] Extrae metadatos del partido, fecha, score, veto y parches
 │   ├── scrapear_vlr_corregido.py    # [Script 3] Extrae mapas, rondas, resoluciones y pick de mapa vs lado
 │   ├── scrapear_stats_pro.py        # [Script 4] Extrae estadísticas por jugador discriminadas por lado (Attack/Defense)
 │   ├── scrapear_enfrentamientos.py  # [Script 5] Extrae matrices de enfrentamientos (H2H) y tabla de multikills/clutches
-│   ├── scrapear_economia.py         # [Script 6] Extrae resumen económico por equipo y economía ronda a ronda
-│   └── scrapear_jugadores.py        # [Script 7] Extrae catálogo de jugadores activos y equipo actual desde VLR.gg
+│   └── scrapear_economia.py         # [Script 6] Extrae resumen económico por equipo y economía ronda a ronda
 │
 └── output_data/                     # Almacenamiento local de datos generados (ignorado en Git)
     ├── .gitkeep                     # Conserva la estructura de la carpeta en clones limpios
@@ -79,15 +78,15 @@ ALETHEIA/
                                             │
            ┌────────────────────────────────┼────────────────────────────────┐
            ▼                                ▼                                ▼
-  [Paso 1: Script 0]            [Paso 2: Scripts 1 & 7]             [Paso 3: Scripts 2-6]
-scrapear_enlaces_evento.py    scrapear_equipos / scrapear_jugadores Ejecución en Paralelo
+  [Paso 1: Script 0]            [Paso 2: Script 1]                  [Paso 3: Scripts 2-6]
+scrapear_enlaces_evento.py    scrapear_equipos_jugadores_franquicia Ejecución en Paralelo
            │                                │                                │
            ▼                                ▼                                ▼
-   VLR.gg Event Page               VLR.gg Rankings & Stats          ThreadPoolExecutor (max=5)
+   VLR.gg Event Page               VLR.gg VCT Standings             ThreadPoolExecutor (max=5)
            │                                │                                │
            ▼                                ▼                                ├── Script 2 (Partidos)
   output_data/                      output_data/                             ├── Script 3 (Mapas/Rondas)
-  enlaces_<evento>.txt              ├── vct_equipos.xlsx                                                                                                          ├── Script 4 (Stats Pro)
+  enlaces_<evento>.txt              ├── vct_equipos.xlsx                     ├── Script 4 (Stats Pro)
                                     └── vct_jugadores.xlsx                   ├── Script 5 (H2H / Multikills)
                                                                              └── Script 6 (Economía)
                                                                                      │
@@ -105,9 +104,9 @@ Al seleccionar `[A]` en `main.py`, el pipeline evalúa el estado del almacenamie
    - Si existe, lo reutiliza y salta al paso 2.
    - Si no existe, lanza interactivamente `scrapear_enlaces_evento.py`.
    - Las URLs de cada `.txt` se normalizan con `normalizar_url()` (`scripts/url_utils.py`): `vlr.gg/123`, `www.vlr.gg/123` o `https://www.vlr.gg/123` se convierten siempre a una URL absoluta válida (evita el `MissingSchema` de `requests`).
-2. **Paso 2 — Catálogo Maestro (Prerrequisitos Secuenciales):**
-   - Ejecuta `scrapear_equipos.py` y `scrapear_jugadores.py`.
-   - Si `vct_equipos.xlsx` o `vct_jugadores.xlsx` ya existen, la función `salidas_existen()` **omite** el script correspondiente automáticamente para ahorrar tiempo de cómputo.
+2. **Paso 2 — Catálogo Maestro (Prerrequisito Secuencial):**
+   - Ejecuta `scrapear_equipos_jugadores_franquicia.py` (catálogo de equipos franquiciados + roster actual, en una sola pasada). La URL base del hub VCT se inyecta vía la variable de entorno `ALETHEIA_VCT_URL` (default `https://www.vlr.gg/vct`), por lo que no requiere input interactivo.
+   - Si `vct_equipos.xlsx` **y** `vct_jugadores.xlsx` ya existen, la función `salidas_existen()` **omite** el script automáticamente para ahorrar tiempo de cómputo.
 3. **Paso 3 — Scraping Concurrente por Lotes de Eventos:**
    - Recorre los archivos `.txt` de `output_data/` (cualquier nombre) y marca como **pendiente** a todo evento cuya carpeta `output_data/<nombre_evento>/` no exista o **no contenga la totalidad de sus archivos de salida** (evento interrumpido a medias). La comprobación (`carpeta_evento_completa()`) es **por evento**, nunca global.
    - Por cada evento pendiente, genera/asegura la subcarpeta `output_data/<nombre_evento>/`.
@@ -157,14 +156,15 @@ Todas las regiones —incluida **China**— se procesan con un único motor, `sc
   - `[2] Solo completados (completed)`: Filtra exclusivamente los tags que contienen la clase CSS `mod-completed` dentro de `div.match-item-eta`.
 - **Salida:** `output_data/enlaces_<slug_evento>[_completed|_all].txt`.
 
-### [Script 1] `scrapear_equipos.py`
-- **Fuente:** Rankings regionales oficiales en VLR.gg (`https://www.vlr.gg/rankings/{slug}`).
+### [Script 1] `scrapear_equipos_jugadores_franquicia.py`
+- **Fuente:** Standings de franquicias en VLR.gg (`https://www.vlr.gg/vct/standings`).
 - **Mecanismo:**
-  1. Recorre las 13 divisiones y regiones (`north-america`, `europe`, `brazil`, `asia-pacific`, `korea`, `china`, `japan`, `la-s`, `la-n`, `oceania`, `mena`, `gc`, `collegiate`).
-  2. Extrae el `team_id` numérico nativo de VLR.gg desde las URLs `/team/(\d+)/`, garantizando compatibilidad directa con las demás tablas de partidos y estadísticas.
-  3. Extrae `team_name`, `region`, `country` y la URL canónica del equipo en VLR.gg.
-  4. Deduplica por `team_id` conservando el primer registro encontrado.
-- **Salida:** `output_data/vct_equipos.xlsx` (Hoja: `Equipos`).
+  1. Recibe la URL base del hub VCT (`ALETHEIA_VCT_URL`, default `https://www.vlr.gg/vct`) y navega a su pestaña `/standings`.
+  2. Recorre los grupos `div.eg-standing-group` (uno por región) y extrae los equipos franquiciados: `team_id` nativo desde las URLs `/team/(\d+)/`, `team_name`, `country`, `region` y la URL canónica.
+  3. Visita la página de cada equipo para extraer su `tag` (`h2.team-header-tag`) y su roster actual (`div.team-roster-item`): `player_id`, `nickname`, `real_name` y `country`.
+  4. Vincula cada jugador a su `team_id`/`team_name`.
+- **Alcance:** solo los **48 equipos franquiciados** (12 por región). **No** incluye equipos Challengers/tier-2.
+- **Salidas:** `output_data/vct_equipos.xlsx` (Hoja: `Equipos`) y `output_data/vct_jugadores.xlsx` (Hoja: `Jugadores`).
 
 ### [Script 2] `scrapear_partidos.py`
 - **Fuente:** Páginas de partido en VLR.gg (`/match_id/...`).
@@ -225,15 +225,6 @@ Todas las regiones —incluida **China**— se procesan con un único motor, `sc
     2. **Tabla de Economía Ronda a Ronda:** Registra el banco inicial (`bank`), el gasto efectuado (`spend`, obtenido del atributo `title` de `.rnd-sq`), la categoría de compra (`category`: `eco`, `semi_eco`, `semi_buy`, `full_buy`) y marca las rondas pistol fijas (`round == 1 or round == 13`).
 - **Salidas:** `output_data/<nombre_evento>/vlr_economia_resumen.xlsx` y `vlr_economia_rondas.xlsx`.
 
-### [Script 7] `scrapear_jugadores.py`
-- **Fuente:** VLR.gg (`/stats/` de ligas VCT y perfiles de jugador `/player/{id}/`).
-- **Mecanismo:**
-  1. Recorre de forma paginada las estadísticas globales de las 4 regiones principales (`americas`, `emea`, `pacific`, `china`).
-  2. Extrae el `player_id` numérico nativo de VLR.gg y el `nickname` de cada jugador.
-  3. Visita de manera individual el perfil de cada jugador único para inspeccionar la sección *"Current Teams"* (`wf-card`).
-  4. Obtiene el `team_id` real y el `team_name` de su equipo activo actual (o `None` si es agente libre / inactivo).
-- **Salida:** `output_data/vct_jugadores.xlsx` (Hoja: `Jugadores`).
-
 ---
 
 ## 5. Esquema de Datos y Diccionario de Tablas
@@ -257,27 +248,30 @@ vct_partidos ◄────────────── vlr_mapas (match_id)
 ---
 
 ### Tabla: `vct_equipos.xlsx` (Hoja: `Equipos`)
-Catálogo maestro de organizaciones con identificador nativo de VLR.gg.
+Catálogo maestro de **organizaciones franquiciadas** VCT con identificador nativo de VLR.gg (48 equipos, 12 por región).
 
 | Campo | Tipo | Descripción | Ejemplo |
 |-------|------|-------------|---------|
 | `team_id` | INTEGER PK | Identificador numérico real nativo de VLR.gg | `2` |
 | `team_name` | TEXT NOT NULL | Nombre oficial de la organización | `Sentinels` |
-| `region` | TEXT NOT NULL | Región competitiva VLR (`North America`, `Europe`, etc.) | `North America` |
+| `tag` | TEXT | Sigla/abreviatura oficial mostrada por VLR.gg | `SEN` |
 | `country` | TEXT | País de bandera del equipo | `United States` |
+| `region` | TEXT NOT NULL | Región competitiva (Americas, EMEA, Pacific, China) | `Americas` |
 | `url` | TEXT NOT NULL | Enlace canónico al perfil del equipo en VLR.gg | `https://www.vlr.gg/team/2/sentinels` |
 
 ---
 
 ### Tabla: `vct_jugadores.xlsx` (Hoja: `Jugadores`)
-Catálogo de jugadores competitivos activos vinculados por su `team_id` nativo de VLR.gg.
+Catálogo del **roster actual** de cada equipo franquiciado, vinculado por su `team_id` nativo de VLR.gg.
 
 | Campo | Tipo | Descripción | Ejemplo |
 |-------|------|-------------|---------|
 | `player_id` | INTEGER PK | Identificador numérico real nativo del jugador en VLR.gg | `9` |
 | `nickname` | TEXT NOT NULL | Alias o gamertag profesional | `zekken` |
+| `real_name` | TEXT | Nombre real del jugador | `Tyson Ngo` |
+| `country` | TEXT | País del jugador (código de bandera) | `us` |
 | `team_id` | INTEGER FK | Relación directa con `vct_equipos.team_id` | `2` |
-| `team_name` | TEXT | Nombre del equipo activo en su perfil de VLR.gg | `Sentinels` |
+| `team_name` | TEXT | Nombre del equipo al que pertenece | `Sentinels` |
 
 ---
 
@@ -442,7 +436,7 @@ Economía transaccional ronda por ronda.
 4. **Optimización de Tiempos (esperas a condición en lugar de `time.sleep` fijos):**  
    Los scripts per-evento (`4`, `5`, `6`) ya no usan `time.sleep()` fijos tras cargar una página o hacer clic: esperan de forma **best-effort** con `WebDriverWait` a una condición concreta (p. ej. `.vm-stats-game`, `table.mod-econ`, `div.ovw-row`) y, si el timeout expira, continúan igualmente, de modo que un fallo puntual nunca provoca pérdida de datos. Esto **no incrementa el número de peticiones** a VLR.gg (no agrava el riesgo de bloqueo de Cloudflare) y elimina el tiempo muerto. Adicionalmente, `scrapear_enfrentamientos.py` carga la pestaña *performance* **una sola vez por partido** y la reutiliza en los dos pases (matrices y multikills), **reduciendo a la mitad sus peticiones**.
 5. **Idempotencia y Resiliencia en Ejecuciones por Lotes:**  
-   La ejecución `[A]` determina la pendencia **por evento**: `carpeta_evento_completa()` compara los archivos presentes en `output_data/<evento>/` contra `archivos_esperados_evento()` (8 para eventos no-China, 4 para China) y marca como pendiente cualquier carpeta incompleta. Además, `ejecutar_script_paralelo()` omite cada script cuya salida ya exista en la carpeta del evento. Resultado: se puede cancelar y reanudar el maestro en cualquier punto, sin omitir eventos a medio terminar y sin re-scrapear lo ya completado. (El catálogo maestro global —scripts 1 y 7— sigue usando `salidas_existen()`.)
+   La ejecución `[A]` determina la pendencia **por evento**: `carpeta_evento_completa()` compara los archivos presentes en `output_data/<evento>/` contra `archivos_esperados_evento()` (8 para eventos no-China, 4 para China) y marca como pendiente cualquier carpeta incompleta. Además, `ejecutar_script_paralelo()` omite cada script cuya salida ya exista en la carpeta del evento. Resultado: se puede cancelar y reanudar el maestro en cualquier punto, sin omitir eventos a medio terminar y sin re-scrapear lo ya completado. (El catálogo maestro global —script 1— sigue usando `salidas_existen()`.)
 6. **Gestión de Procesos Hijos y Prevención de Navegadores Huérfanos:**  
    Cada script analítico abre su propio Chrome headless. Al interrumpir con `Ctrl+C`, `subprocess.run()` mata solo al hijo Python, **no** a sus descendientes (`chromedriver` y `chrome.exe`), que quedarían huérfanos; acumulados entre corridas agotan la RAM del equipo (llegó a observarse 142 procesos `chrome.exe` y ~300 MB libres de 7,4 GB). `main.py` lo evita con dos capas: (1) registra cada subproceso con `Popen` y, ante `KeyboardInterrupt`, ejecuta `matar_procesos_activos()` (`taskkill /F /T /PID`) para terminar el **árbol completo** de procesos; (2) al arrancar, `limpiar_navegadores_huerfanos()` cierra cualquier Chrome headless de Selenium remanente de corridas anteriores (en el arranque no hay scraping activo, por lo que esos procesos son necesariamente huérfanos). El grado de concurrencia se controla con la constante `MAX_PARALELOS` (por defecto 5; conviene reducirlo en equipos con poca RAM, ya que cada script abre un Chrome).
 
@@ -476,9 +470,8 @@ python main.py
 
 Menú disponible:
 - `[0]`: Extractor de enlaces de evento (solicita URL de torneo en VLR.gg y genera el `.txt`).
-- `[1]`: Equipos VCT (descarga catálogo maestro de equipos desde VLR.gg con `team_id` nativo).
+- `[1]`: Equipos y jugadores VCT (descarga el catálogo de equipos franquiciados y su roster actual desde VLR.gg con `team_id`/`player_id` nativos).
 - `[2] - [6]`: Ejecutar un script analítico específico de manera individual sobre un archivo `.txt`.
-- `[7]`: Jugadores VCT (descarga catálogo maestro de jugadores y equipo actual desde VLR.gg con `player_id` y `team_id` nativos).
 - `[A]`: **Ejecución total en paralelo.** Procesa todos los torneos pendientes con 5 hilos simultáneos.
 - `[Q]`: Salir del programa.
 

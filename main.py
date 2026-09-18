@@ -58,9 +58,10 @@ SCRIPTS = {
         "salida": [],  # Nombre dinámico según el evento; nunca se omite
     },
     "1": {
-        "nombre": "Equipos VCT (VLR.gg)",
-        "archivo": "scrapear_equipos.py",
-        "salida": ["vct_equipos.xlsx"],
+        "nombre": "Equipos y jugadores VCT (franquicias)",
+        "archivo": "scrapear_equipos_jugadores_franquicia.py",
+        "salida": ["vct_equipos.xlsx", "vct_jugadores.xlsx"],
+        "env": {"ALETHEIA_VCT_URL": "https://www.vlr.gg/vct"},
     },
     "2": {
         "nombre": "Partidos VCT (VLR.gg)",
@@ -87,17 +88,12 @@ SCRIPTS = {
         "archivo": "scrapear_economia.py",
         "salida": ["vlr_economia_resumen.xlsx", "vlr_economia_rondas.xlsx"],
     },
-    "7": {
-        "nombre": "Jugadores VCT (VLR.gg)",
-        "archivo": "scrapear_jugadores.py",
-        "salida": ["vct_jugadores.xlsx"],
-    },
 }
 
 # Scripts que se ejecutan en paralelo al elegir [A]
 SCRIPTS_PARALELOS = ["2", "3", "4", "5", "6"]
 # Scripts que siempre corren en secuencia (prerequisitos)
-SCRIPTS_SECUENCIALES = ["0", "1", "7"]
+SCRIPTS_SECUENCIALES = ["0", "1"]
 # Nº máximo de scripts simultáneos. Cada uno abre su propio Chrome, así que
 # bajarlo reduce el consumo de RAM (útil en equipos con poca memoria).
 MAX_PARALELOS = 5
@@ -255,9 +251,16 @@ def ejecutar_script(key, omitir_si_existe=False):
     print(f"   Archivo: {info['archivo']}")
     print("-" * 60)
 
+    # Permite que cada script declare variables de entorno propias (ej. la URL
+    # base del hub VCT para el catálogo) sin depender de input() interactivo.
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    env.update(info.get("env", {}))
+
     resultado = subprocess.run(
         [sys.executable, ruta],
         cwd=SCRIPTS_DIR,
+        env=env,
     )
 
     if resultado.returncode == 0:
@@ -369,8 +372,6 @@ def ejecutar_todos():
     print("  PASO 2/3 — Catálogo Maestro (Equipos y Jugadores VLR)")
     print("=" * 60)
     if ejecutar_script("1", omitir_si_existe=True):
-        exitos += 1
-    if ejecutar_script("7", omitir_si_existe=True):
         exitos += 1
 
     # ── PASO 3: Por cada .txt pendiente → 5 scripts en PARALELO ─────────────
